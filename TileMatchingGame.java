@@ -30,7 +30,7 @@ public class TileMatchingGame {
     static int    shiftRights;
     static String playerName;
 
-    // Last command result / auto-add message shown in the status panel
+    // Last command result shown in the status panel
     static String lastMessage = "";
 
     // ----- Constants -----
@@ -38,15 +38,6 @@ public class TileMatchingGame {
     static final int    SET_CAPACITY    = 10;
     static final int    HIGH_SCORE_MAX  = 10;
     static final String HIGH_SCORE_FILE = "HighScoreTable.txt";
-
-    // ANSI colour codes
-    static final String RESET  = "\u001B[0m";
-    static final String BOLD   = "\u001B[1m";
-    static final String GREEN  = "\u001B[32m";
-    static final String YELLOW = "\u001B[33m";
-    static final String CYAN   = "\u001B[36m";
-    static final String RED    = "\u001B[31m";
-    static final String WHITE  = "\u001B[37m";
 
     // ============================================================
     //  MAIN
@@ -56,10 +47,8 @@ public class TileMatchingGame {
         Scanner scanner = new Scanner(System.in);
         Random  random  = new Random();
 
-        clearScreen();
-
         // --- Player name ---
-        System.out.print(BOLD + "Enter player name: " + RESET);
+        System.out.print("Enter player name: ");
         playerName = scanner.nextLine().trim();
 
         // --- Initialise sets ---
@@ -84,7 +73,7 @@ public class TileMatchingGame {
         shiftRights = random.nextInt(5) + 1;   // 1 .. 5
         score       = 0;
         stepCount   = 0;
-        lastMessage = CYAN + "Game started! Good luck, " + playerName + "!" + RESET;
+        lastMessage = "Game started! Good luck, " + playerName + "!";
 
         // --- Initialise reserve queue (26 shuffled letters) ---
         char[] rPool = shuffleAlphabet(random);
@@ -108,23 +97,23 @@ public class TileMatchingGame {
 
             // Check end conditions at the START of each turn
             if (allSetsEmpty()) {
-                lastMessage = RED + "*** All sets are empty! Game over! ***" + RESET;
+                lastMessage = "*** All sets are empty! Game over! ***";
                 displayGameState();
                 break;
             }
             if (stepCount >= maxSteps) {
-                lastMessage = RED + "*** Maximum step limit (" + maxSteps + ") reached! Game over! ***" + RESET;
+                lastMessage = "*** Maximum step limit (" + maxSteps + ") reached! Game over! ***";
                 displayGameState();
                 break;
             }
 
-            System.out.print(BOLD + ">> " + RESET);
+            System.out.print(">> ");
             String cmd = scanner.nextLine().trim();
 
             boolean validStep = false;
 
             if (cmd.equalsIgnoreCase("F")) {
-                lastMessage = YELLOW + "Player ended the game." + RESET;
+                lastMessage = "Player ended the game.";
                 break gameLoop;
 
             } else if (cmd.startsWith("Match(") && cmd.endsWith(")")) {
@@ -137,13 +126,13 @@ public class TileMatchingGame {
                 validStep = doShiftQueue();
 
             } else {
-                lastMessage = RED + "Unknown command! Valid: Match(i,j)  AddSet(i)  ShiftQueue  F" + RESET;
+                lastMessage = "Unknown command! Valid: Match(i,j)  AddSet(i)  ShiftQueue  F";
             }
 
             if (validStep) {
                 stepCount++;
 
-                // Every 3 valid steps → auto-add from supplementary queue
+                // Every 3 valid steps -> auto-add from supplementary queue
                 if (stepCount % 3 == 0) {
                     doAutoAdd();
                 }
@@ -152,17 +141,17 @@ public class TileMatchingGame {
 
                 // Check end conditions AFTER the step (for immediate termination)
                 if (allSetsEmpty()) {
-                    lastMessage = RED + "*** All sets are empty! Game over! ***" + RESET;
+                    lastMessage = "*** All sets are empty! Game over! ***";
                     displayGameState();
                     break;
                 }
                 if (stepCount >= maxSteps) {
-                    lastMessage = RED + "*** Maximum step limit (" + maxSteps + ") reached! Game over! ***" + RESET;
+                    lastMessage = "*** Maximum step limit (" + maxSteps + ") reached! Game over! ***";
                     displayGameState();
                     break;
                 }
             } else {
-                // Re-render so the error message is visible in the status panel
+                // Re-render so the error/warning message is visible
                 displayGameState();
             }
         }
@@ -171,13 +160,13 @@ public class TileMatchingGame {
         //  GAME OVER
         // ============================================================
         clearScreen();
-        System.out.println(BOLD + "==========================================" + RESET);
-        System.out.println(BOLD + "               GAME OVER"                  + RESET);
-        System.out.println(BOLD + "==========================================" + RESET);
-        System.out.println("Player     : " + BOLD + playerName + RESET);
-        System.out.println("Final Score: " + BOLD + GREEN + score + RESET);
+        System.out.println("==========================================");
+        System.out.println("               GAME OVER");
+        System.out.println("==========================================");
+        System.out.println("Player     : " + playerName);
+        System.out.println("Final Score: " + score);
         System.out.println("Steps taken: " + stepCount + " / " + maxSteps);
-        System.out.println(BOLD + "==========================================" + RESET);
+        System.out.println("==========================================");
 
         updateHighScores(playerName, score);
         displayHighScores();
@@ -192,8 +181,8 @@ public class TileMatchingGame {
 
     /**
      * Handles Match(i,j): compares the top tiles of Set-i and Set-j.
-     * Equal → removes both, +5 pts.
-     * Different → warning, tiles stay.
+     * Equal -> removes both, +5 pts.
+     * Different -> warning, tiles stay.
      *
      * @return true if the command was valid and the step should count
      */
@@ -203,13 +192,13 @@ public class TileMatchingGame {
         try {
             inner = cmd.substring(6, cmd.length() - 1);
         } catch (StringIndexOutOfBoundsException e) {
-            lastMessage = RED + "Error: Invalid Match format. Use: Match(i,j)" + RESET;
+            lastMessage = "Error: Invalid Match format. Use: Match(i,j)";
             return false;
         }
 
         String[] parts = inner.split(",");
         if (parts.length != 2) {
-            lastMessage = RED + "Error: Match requires exactly two indices. Use: Match(i,j)" + RESET;
+            lastMessage = "Error: Match requires exactly two indices. Use: Match(i,j)";
             return false;
         }
 
@@ -218,28 +207,28 @@ public class TileMatchingGame {
             i = Integer.parseInt(parts[0].trim()) - 1;
             j = Integer.parseInt(parts[1].trim()) - 1;
         } catch (NumberFormatException e) {
-            lastMessage = RED + "Error: Indices must be integers 1–" + SET_COUNT + ". Use: Match(i,j)" + RESET;
+            lastMessage = "Error: Indices must be integers 1-" + SET_COUNT + ". Use: Match(i,j)";
             return false;
         }
 
         if (i < 0 || i >= SET_COUNT) {
-            lastMessage = RED + "Error: First index out of range (must be 1–" + SET_COUNT + ")." + RESET;
+            lastMessage = "Error: First index out of range (must be 1-" + SET_COUNT + ").";
             return false;
         }
         if (j < 0 || j >= SET_COUNT) {
-            lastMessage = RED + "Error: Second index out of range (must be 1–" + SET_COUNT + ")." + RESET;
+            lastMessage = "Error: Second index out of range (must be 1-" + SET_COUNT + ").";
             return false;
         }
         if (i == j) {
-            lastMessage = RED + "Error: Cannot match a set with itself." + RESET;
+            lastMessage = "Error: Cannot match a set with itself.";
             return false;
         }
         if (sets[i].isEmpty()) {
-            lastMessage = RED + "Error: Set" + (i + 1) + " is empty." + RESET;
+            lastMessage = "Error: Set" + (i + 1) + " is empty.";
             return false;
         }
         if (sets[j].isEmpty()) {
-            lastMessage = RED + "Error: Set" + (j + 1) + " is empty." + RESET;
+            lastMessage = "Error: Set" + (j + 1) + " is empty.";
             return false;
         }
 
@@ -250,11 +239,11 @@ public class TileMatchingGame {
             sets[i].pop();
             sets[j].pop();
             score += 5;
-            lastMessage = GREEN + "MATCH! '" + tile1 + "' removed from Set" + (i + 1)
-                    + " and Set" + (j + 1) + ".  +5 pts  →  Score: " + score + RESET;
+            lastMessage = "MATCH! '" + tile1 + "' removed from Set" + (i + 1)
+                    + " and Set" + (j + 1) + ".  +5 pts  ->  Score: " + score;
         } else {
-            lastMessage = YELLOW + "No match: Set" + (i + 1) + " top [" + tile1
-                    + "] vs Set" + (j + 1) + " top [" + tile2 + "]. Tiles remain." + RESET;
+            lastMessage = "No match: Set" + (i + 1) + " top [" + tile1
+                    + "] vs Set" + (j + 1) + " top [" + tile2 + "]. Tiles remain.";
         }
 
         return true;
@@ -273,7 +262,7 @@ public class TileMatchingGame {
         try {
             inner = cmd.substring(7, cmd.length() - 1);
         } catch (StringIndexOutOfBoundsException e) {
-            lastMessage = RED + "Error: Invalid AddSet format. Use: AddSet(i)" + RESET;
+            lastMessage = "Error: Invalid AddSet format. Use: AddSet(i)";
             return false;
         }
 
@@ -281,16 +270,16 @@ public class TileMatchingGame {
         try {
             i = Integer.parseInt(inner.trim()) - 1;
         } catch (NumberFormatException e) {
-            lastMessage = RED + "Error: Index must be an integer 1–" + SET_COUNT + "." + RESET;
+            lastMessage = "Error: Index must be an integer 1-" + SET_COUNT + ".";
             return false;
         }
 
         if (i < 0 || i >= SET_COUNT) {
-            lastMessage = RED + "Error: Set index out of range (must be 1–" + SET_COUNT + ")." + RESET;
+            lastMessage = "Error: Set index out of range (must be 1-" + SET_COUNT + ").";
             return false;
         }
         if (reserveQueue.isEmpty()) {
-            lastMessage = RED + "Error: Reserve queue is empty." + RESET;
+            lastMessage = "Error: Reserve queue is empty.";
             return false;
         }
 
@@ -299,15 +288,15 @@ public class TileMatchingGame {
 
         if (sets[i].isFull()) {
             reserveQueue.enqueue(letter);
-            msg = YELLOW + "Set" + (i + 1) + " is full! '" + letter + "' returned to reserve queue." + RESET;
+            msg = "Warning: Set" + (i + 1) + " is full! '" + letter + "' returned to reserve queue.";
         } else {
             sets[i].push(letter);
-            msg = CYAN + "Added '" + letter + "' to Set" + (i + 1) + "." + RESET;
+            msg = "Added '" + letter + "' to Set" + (i + 1) + ".";
         }
 
         if (shiftRights == 0) {
             score -= 2;
-            msg += "  " + RED + "No shifts left! Penalty -2 pts  →  Score: " + score + RESET;
+            msg += "  No shifts left! Penalty -2 pts  ->  Score: " + score;
         }
 
         lastMessage = msg;
@@ -322,11 +311,11 @@ public class TileMatchingGame {
      */
     static boolean doShiftQueue() {
         if (shiftRights <= 0) {
-            lastMessage = RED + "Warning: No shift rights remaining! Cannot shift." + RESET;
+            lastMessage = "Warning: No shift rights remaining! Cannot shift.";
             return false;
         }
         if (reserveQueue.isEmpty()) {
-            lastMessage = RED + "Warning: Reserve queue is empty. Nothing to shift." + RESET;
+            lastMessage = "Warning: Reserve queue is empty. Nothing to shift.";
             return false;
         }
 
@@ -334,8 +323,8 @@ public class TileMatchingGame {
         reserveQueue.enqueue(front);
         shiftRights--;
 
-        lastMessage = CYAN + "Queue shifted. '" + front + "' moved to the rear."
-                + "  Remaining shifts: " + shiftRights + RESET;
+        lastMessage = "Queue shifted. '" + front + "' moved to the rear."
+                + "  Remaining shifts: " + shiftRights;
         return true;
     }
 
@@ -347,7 +336,7 @@ public class TileMatchingGame {
     @SuppressWarnings("unchecked")
     static void doAutoAdd() {
         if (supplementaryQueue.isEmpty()) {
-            lastMessage += "\n" + YELLOW + "[Auto-Add] Supplementary queue empty. Skipped." + RESET;
+            lastMessage += "\n[Auto-Add] Supplementary queue empty. Skipped.";
             return;
         }
 
@@ -364,12 +353,12 @@ public class TileMatchingGame {
 
         if (sets[minIdx].isFull()) {
             supplementaryQueue.enqueue(letter);
-            lastMessage += "\n" + YELLOW + "[Auto-Add] Set" + (minIdx + 1)
-                    + " full! '" + letter + "' returned to supplementary queue." + RESET;
+            lastMessage += "\n[Auto-Add] Set" + (minIdx + 1)
+                    + " full! '" + letter + "' returned to supplementary queue.";
         } else {
             sets[minIdx].push(letter);
-            lastMessage += "\n" + CYAN + "[Auto-Add] '" + letter
-                    + "' added to Set" + (minIdx + 1) + " (fewest tiles)." + RESET;
+            lastMessage += "\n[Auto-Add] '" + letter
+                    + "' added to Set" + (minIdx + 1) + " (fewest tiles).";
         }
     }
 
@@ -377,10 +366,12 @@ public class TileMatchingGame {
     //  DISPLAY HELPERS
     // ============================================================
 
-    /** Clears the terminal screen using ANSI escape codes. */
+    /**
+     * Scrolls past old output so each turn appears at the top of the visible window.
+     * Works in IntelliJ, Windows cmd/PowerShell, macOS Terminal, and Linux terminals.
+     */
     static void clearScreen() {
-        System.out.print("\u001B[2J\u001B[H");
-        System.out.flush();
+        for (int i = 0; i < 40; i++) System.out.println();
     }
 
     /** Clears and redraws the entire game screen. */
@@ -388,17 +379,14 @@ public class TileMatchingGame {
     static void displayGameState() {
         clearScreen();
 
-        // ── Header ──────────────────────────────────────────────
-        System.out.println(BOLD + "==========================================" + RESET);
-        System.out.println(BOLD + "          TILE  MATCHING  GAME"            + RESET);
-        System.out.println(BOLD + "==========================================" + RESET);
-        System.out.printf(" Player: %-14s  Step: %d / %d%n",
-                BOLD + playerName + RESET, stepCount, maxSteps);
-        System.out.printf(" Score:  %-14s  Shifts left: %d%n",
-                BOLD + GREEN + score + RESET, shiftRights);
-        System.out.println(BOLD + "------------------------------------------" + RESET);
+        System.out.println("==========================================");
+        System.out.println("          TILE  MATCHING  GAME");
+        System.out.println("==========================================");
+        System.out.printf(" Player: %-15s Step: %d / %d%n", playerName, stepCount, maxSteps);
+        System.out.printf(" Score : %-15s Shifts left: %d%n", score, shiftRights);
+        System.out.println("------------------------------------------");
 
-        // ── Tile sets ───────────────────────────────────────────
+        // Tile sets
         System.out.println();
         for (int i = 0; i < SET_COUNT; i++) {
             System.out.printf(" Set%d [%2d/%2d]  ", (i + 1), sets[i].size(), SET_CAPACITY);
@@ -406,75 +394,71 @@ public class TileMatchingGame {
             System.out.println();
         }
 
-        // ── Queues ──────────────────────────────────────────────
+        // Queues
         System.out.println();
-        System.out.print(" Reserve Queue       ");
+        System.out.print(" Reserve Queue       : ");
         printQueue(reserveQueue);
         System.out.println();
 
-        System.out.print(" Supplementary Queue ");
+        System.out.print(" Supplementary Queue : ");
         printQueue(supplementaryQueue);
         System.out.println();
 
-        // ── Last message ────────────────────────────────────────
-        System.out.println(BOLD + "------------------------------------------" + RESET);
+        // Last message
+        System.out.println("------------------------------------------");
         if (!lastMessage.isEmpty()) {
             System.out.println(" " + lastMessage);
         }
-        System.out.println(BOLD + "==========================================" + RESET);
-        System.out.println(" Commands:  Match(i,j)   AddSet(i)   ShiftQueue   F");
-        System.out.println(BOLD + "==========================================" + RESET);
+        System.out.println("==========================================");
+        System.out.println(" Commands: Match(i,j)  AddSet(i)  ShiftQueue  F");
+        System.out.println("==========================================");
     }
 
     /**
      * Prints a Character stack from bottom to top.
      * Uses a temporary stack to reverse and restore.
-     * Format:  A  B  C  ←top
+     * Format:  [ A, B, C ] <top
      */
     @SuppressWarnings("unchecked")
     static void printStack(Stack<Character> stack) {
         int sz = stack.size();
-
-        // Fill unused slots with dots for a fixed-width visual
-        int empty = SET_CAPACITY - sz;
-        for (int k = 0; k < empty; k++) System.out.print(WHITE + "·" + RESET + " ");
+        System.out.print("[ ");
 
         if (sz > 0) {
             Stack<Character> temp = new Stack<>(SET_CAPACITY);
             for (int k = 0; k < sz; k++) temp.push((Character) stack.pop());
             for (int k = 0; k < sz; k++) {
                 char c = (Character) temp.pop();
-                boolean isTop = (k == sz - 1);
-                if (isTop) System.out.print(BOLD + GREEN + c + RESET);
-                else       System.out.print(c);
-                System.out.print(" ");
+                System.out.print(c);
+                if (k < sz - 1) System.out.print(", ");
                 stack.push(c);
             }
         }
 
-        System.out.print(BOLD + "←top" + RESET);
+        System.out.print(" ] <top");
     }
 
     /**
      * Prints a Character queue from front to rear.
      * Uses a temporary queue to drain and restore.
-     * Format:  [front→  A  B  C  ]
+     * Format:  [ A, B, C ] <front
      */
     static void printQueue(Queue<Character> queue) {
         int sz = queue.size();
-        System.out.print("[front→ ");
+        System.out.print("[ ");
 
         if (sz > 0) {
             Queue<Character> temp = new Queue<>(sz + 5);
             for (int k = 0; k < sz; k++) {
                 char c = queue.dequeue();
-                System.out.print(c + " ");
+                System.out.print(c);
+                if (k < sz - 1) System.out.print(", ");
                 temp.enqueue(c);
             }
             for (int k = 0; k < sz; k++) queue.enqueue(temp.dequeue());
         }
 
-        System.out.print("]");
+        System.out.print(" ] <front");
     }
 
     // ============================================================
@@ -549,9 +533,9 @@ public class TileMatchingGame {
     /** Prints the high score table to the console. */
     static void displayHighScores() {
         System.out.println();
-        System.out.println(BOLD + "==========================================" + RESET);
-        System.out.println(BOLD + "           HIGH SCORE TABLE"               + RESET);
-        System.out.println(BOLD + "==========================================" + RESET);
+        System.out.println("==========================================");
+        System.out.println("           HIGH SCORE TABLE");
+        System.out.println("==========================================");
 
         int sz = highScoreTable.size();
         if (sz == 0) {
@@ -560,14 +544,13 @@ public class TileMatchingGame {
             Queue<PlayerScore> temp = new Queue<>(HIGH_SCORE_MAX + 1);
             for (int i = 0; i < sz; i++) {
                 PlayerScore ps = highScoreTable.dequeue();
-                System.out.printf("  %2d. %-20s %s%d%s%n",
-                        (i + 1), ps.getName(), BOLD + GREEN, ps.getScore(), RESET);
+                System.out.printf("  %2d. %-20s %d%n", (i + 1), ps.getName(), ps.getScore());
                 temp.enqueue(ps);
             }
             for (int i = 0; i < sz; i++) highScoreTable.enqueue(temp.dequeue());
         }
 
-        System.out.println(BOLD + "==========================================" + RESET);
+        System.out.println("==========================================");
     }
 
     /**
@@ -602,7 +585,7 @@ public class TileMatchingGame {
     }
 
     /**
-     * Returns A–Z in a randomly shuffled order (Fisher-Yates).
+     * Returns A-Z in a randomly shuffled order (Fisher-Yates).
      * char[] is used only for initialisation, not as a game data structure.
      */
     static char[] shuffleAlphabet(Random random) {
