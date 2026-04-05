@@ -385,66 +385,8 @@ async def _finalize_ffa_pools(
     active_ffa_games.pop(channel.id, None)
 
 
-# ===========================================================================
-# TEAM DRAFT — unchanged from original
-# ===========================================================================
-
-class TeamDraftSession:
-    def __init__(self, members: list[discord.Member], team_count: int):
-        self.members = members
-        self.team_count = team_count
-        self.banned: set[tuple[str, str]] = set()
-
-    def ban_status(self) -> str:
-        banned_text = (
-            ", ".join(f"{c} — {l}" for c, l in sorted(self.banned))
-            if self.banned
-            else "Henüz ban yok"
-        )
-        return (
-            f"🚫 **Ban Aşaması**\n"
-            f"Toplam lider: **{len(ALL_LEADERS)}**  |  "
-            f"Banlanan: **{len(self.banned)}**  |  "
-            f"Kalan: **{len(ALL_LEADERS) - len(self.banned)}**\n"
-            f"Banlananlar: {banned_text}"
-        )
-
-    async def finalize(self, interaction: discord.Interaction):
-        player_pools = _distribute_leaders(self.members, banned_pairs=self.banned)
-
-        shuffled_members = self.members[:]
-        random.shuffle(shuffled_members)
-
-        teams: list[list[discord.Member]] = [[] for _ in range(self.team_count)]
-        for i, m in enumerate(shuffled_members):
-            teams[i % self.team_count].append(m)
-
-        mentions = " ".join(m.mention for m in self.members)
-        header = discord.Embed(
-            title="🤝 Civilization VI — Takımlı Draft",
-            description=f"{len(self.members)} oyuncu · {self.team_count} takım · {len(self.banned)} ban",
-            color=discord.Color.green(),
-        )
-        all_embeds: list[discord.Embed] = [header]
-        for i, team in enumerate(teams):
-            team_header = discord.Embed(
-                title=f"{TEAM_EMOJIS[i % len(TEAM_EMOJIS)]} Takım {i + 1}",
-                color=TEAM_COLORS[i % len(TEAM_COLORS)],
-            )
-            all_embeds.append(team_header)
-            for member in team:
-                all_embeds.append(
-                    build_pool_embed(member, player_pools[member], TEAM_COLORS[i % len(TEAM_COLORS)])
-                )
-
-        first, rest = all_embeds[:10], all_embeds[10:]
-        await interaction.response.edit_message(content=mentions, embeds=first, view=None)
-        for chunk in [rest[i : i + 10] for i in range(0, len(rest), 10)]:
-            await interaction.followup.send(embeds=chunk)
-
-
 class LeaderBanView(discord.ui.View):
-    def __init__(self, session: TeamDraftSession, civ: str, ban_view: "TeamBanPhaseView"):
+    def __init__(self, session, civ: str, ban_view: "TeamBanPhaseView"):
         super().__init__(timeout=120)
         self.session = session
         self.civ = civ
@@ -486,7 +428,7 @@ class LeaderBanView(discord.ui.View):
 
 
 class TeamBanPhaseView(discord.ui.View):
-    def __init__(self, session: TeamDraftSession):
+    def __init__(self, session):
         super().__init__(timeout=600)
         self.session = session
         self.page = 0
@@ -541,24 +483,6 @@ class TeamBanPhaseView(discord.ui.View):
         self.stop()
         await self.session.finalize(interaction)
 
-
-class TeamCountView(discord.ui.View):
-    def __init__(self, members: list[discord.Member]):
-        super().__init__(timeout=60)
-        self.members = members
-        for n in [2, 3, 4, 5, 6]:
-            if n <= len(members):
-                btn = discord.ui.Button(label=f"{n} Takım", style=discord.ButtonStyle.primary)
-                btn.callback = self._make_cb(n)
-                self.add_item(btn)
-
-    def _make_cb(self, n: int):
-        async def cb(interaction: discord.Interaction):
-            self.stop()
-            session = TeamDraftSession(self.members, team_count=n)
-            view = TeamBanPhaseView(session)
-            await interaction.response.edit_message(content=session.ban_status(), view=view)
-        return cb
 
 
 # ===========================================================================
@@ -1107,25 +1031,6 @@ async def ffa_command(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(name="teamdraft", description="Multi-team leader ban + draft (voice channel)")
-async def teams_command(interaction: discord.Interaction):
-    members = get_voice_members(interaction)
-    if not members:
-        await interaction.response.send_message(
-            "❌ Bir ses kanalında olman gerekiyor!", ephemeral=True
-        )
-        return
-    if len(members) < 2:
-        await interaction.response.send_message(
-            "❌ Takımlı oyun için en az 2 kişi gerekli!", ephemeral=True
-        )
-        return
-    await interaction.response.send_message(
-        content=f"Kaç takım olsun? ({len(members)} oyuncu)",
-        view=TeamCountView(members),
-    )
-
-
 # ---------------------------------------------------------------------------
 # /id — maç sonucu kayıt
 # ---------------------------------------------------------------------------
@@ -1292,11 +1197,6 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(
         name="/team @opponent",
         value="2-team draft: map bans → civ bans → civ picks (sequential, turn-based).",
-        inline=False,
-    )
-    embed.add_field(
-        name="/teamdraft",
-        value="Multi-team leader ban + draft for voice channel players.",
         inline=False,
     )
     embed.add_field(
