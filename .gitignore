@@ -1,2 +1,5 @@
 *.class
 HighScoreTable.txt
+__pycache__/
+*.pyc
+.env
