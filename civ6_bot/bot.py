@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 import random
 from collections import Counter
@@ -550,8 +551,375 @@ class TeamCountView(discord.ui.View):
 
 
 # ===========================================================================
+# /team GAME — harita ban → civ ban → civ seçim (2 takım, sıralı aksiyonlar)
+# ===========================================================================
+
+active_team_games: dict[int, "TeamGame"] = {}
+
+
+def _build_team_action_queue(team_size: int) -> list[tuple[str, int]]:
+    """Return the full ordered sequence of (action_type, team_number) for a team game."""
+    queue: list[tuple[str, int]] = []
+
+    # 6 harita ban: T1, T2, T1, T2, T1, T2  →  son harita seçildi
+    for i in range(6):
+        queue.append(("map_ban", 1 if i % 2 == 0 else 2))
+
+    # Civ ban aşaması 1: T1, T2, T1
+    queue += [("civ_ban", 1), ("civ_ban", 2), ("civ_ban", 1)]
+
+    # Civ seçim aşaması 1: T1:1, T2:2, T1:1  →  her takım 2 seçime sahip
+    queue += [("civ_pick", 1), ("civ_pick", 2), ("civ_pick", 2), ("civ_pick", 1)]
+
+    if team_size > 2:
+        # Civ ban aşaması 2: T2, T1, T2, T1
+        queue += [("civ_ban", 2), ("civ_ban", 1), ("civ_ban", 2), ("civ_ban", 1)]
+
+        # Devam eden seçimler: önce T2:1, sonra T1:2, T2:2, T1:2... dolu olana kadar
+        t1, t2 = 2, 2
+        if t2 < team_size:
+            queue.append(("civ_pick", 2))
+            t2 += 1
+        turn = 1
+        while t1 < team_size or t2 < team_size:
+            for _ in range(2):
+                if turn == 1 and t1 < team_size:
+                    queue.append(("civ_pick", 1))
+                    t1 += 1
+                elif turn == 2 and t2 < team_size:
+                    queue.append(("civ_pick", 2))
+                    t2 += 1
+            turn = 2 if turn == 1 else 1
+
+    return queue
+
+
+class TeamGame:
+    def __init__(
+        self,
+        all_players: list[discord.Member],
+        rep1: discord.Member,   # /team komutunu açan
+        rep2: discord.Member,   # etiketlenen kişi (takım seçer)
+    ):
+        self.all_players = all_players
+        self.rep1 = rep1
+        self.rep2 = rep2
+
+        self.team1: list[discord.Member] = []
+        self.team2: list[discord.Member] = []
+        self.team1_rep: discord.Member | None = None
+        self.team2_rep: discord.Member | None = None
+
+        self.available_maps: list[str] = [name for name, _ in MAPS]
+        self.selected_map: str | None = None
+        self.map_bans: list[tuple[int, str]] = []   # (takım, harita)
+
+        self.banned_civs: list[tuple[int, str]] = []  # (takım, civ)
+        self.picked_civs: list[tuple[int, str]] = []  # (takım, civ)
+
+        self.action_queue: list[tuple[str, int]] = []
+        self.action_index: int = 0
+        self.summary_msg: discord.Message | None = None
+        self.prompt_msg: discord.Message | None = None
+
+    @property
+    def team_size(self) -> int:
+        return len(self.all_players) // 2
+
+    def get_rep(self, team: int) -> discord.Member:
+        return self.team1_rep if team == 1 else self.team2_rep  # type: ignore
+
+    def current_action(self) -> tuple[str, int] | None:
+        if self.action_index < len(self.action_queue):
+            return self.action_queue[self.action_index]
+        return None
+
+    def assign_teams(self, rep2_team: int):
+        """rep2 hangi takımı seçtiyse o takıma gider, rep1 diğerine."""
+        if rep2_team == 1:
+            self.team1_rep, self.team2_rep = self.rep2, self.rep1
+        else:
+            self.team1_rep, self.team2_rep = self.rep1, self.rep2
+
+        others = [p for p in self.all_players if p not in (self.rep1, self.rep2)]
+        random.shuffle(others)
+        half = len(others) // 2
+        self.team1 = [self.team1_rep] + others[:half]
+        self.team2 = [self.team2_rep] + others[half:]
+        self.action_queue = _build_team_action_queue(self.team_size)
+
+    def build_summary_embed(self) -> discord.Embed:
+        def names(members: list[discord.Member]) -> str:
+            return ", ".join(m.display_name for m in members) or "—"
+
+        # Harita durumu
+        if self.selected_map:
+            map_str = f"✅ **{self.selected_map}**"
+        elif self.map_bans:
+            banned_str = ", ".join(f"~~{m}~~" for _, m in self.map_bans)
+            map_str = f"{len(self.map_bans)}/6 ban  ·  Kalan: {', '.join(self.available_maps)}\n{banned_str}"
+        else:
+            map_str = "Başlamadı"
+
+        t1_bans  = [f"{civ_emoji_str(c)}{c}" for t, c in self.banned_civs if t == 1]
+        t2_bans  = [f"{civ_emoji_str(c)}{c}" for t, c in self.banned_civs if t == 2]
+        t1_picks = [f"{civ_emoji_str(c)}{c}" for t, c in self.picked_civs  if t == 1]
+        t2_picks = [f"{civ_emoji_str(c)}{c}" for t, c in self.picked_civs  if t == 2]
+
+        action = self.current_action()
+        if action:
+            at, team = action
+            labels = {"map_ban": "🗺️ Harita Banlıyor", "civ_ban": "🚫 Civ Banlıyor", "civ_pick": "✅ Civ Seçiyor"}
+            next_str = f"**Takım {team}** — {self.get_rep(team).display_name}  {labels[at]}"
+        else:
+            next_str = "✅ Draft tamamlandı!"
+
+        embed = discord.Embed(title="🤝 Civilization VI — Takım Draft", color=discord.Color.blurple())
+        embed.add_field(name="🔴 Takım 1", value=names(self.team1), inline=True)
+        embed.add_field(name="🔵 Takım 2", value=names(self.team2), inline=True)
+        embed.add_field(name="🗺️ Harita", value=map_str, inline=False)
+        embed.add_field(
+            name="🚫 Banlar",
+            value=f"T1: {', '.join(t1_bans) or '—'}\nT2: {', '.join(t2_bans) or '—'}",
+            inline=True,
+        )
+        embed.add_field(
+            name="✅ Seçimler",
+            value=f"T1: {', '.join(t1_picks) or '—'}\nT2: {', '.join(t2_picks) or '—'}",
+            inline=True,
+        )
+        embed.add_field(name="⏭️ Sıradaki", value=next_str, inline=False)
+        return embed
+
+    async def advance(self, channel: discord.TextChannel):
+        if self.prompt_msg:
+            try:
+                await self.prompt_msg.delete()
+            except discord.HTTPException:
+                pass
+            self.prompt_msg = None
+
+        self.action_index += 1
+
+        if self.summary_msg:
+            try:
+                await self.summary_msg.edit(embed=self.build_summary_embed())
+            except discord.HTTPException:
+                pass
+
+        action = self.current_action()
+        if action is None:
+            await self._finalize(channel)
+        else:
+            await self._prompt_action(channel, action)
+
+    async def _prompt_action(self, channel: discord.TextChannel, action: tuple[str, int]):
+        at, team = action
+        rep = self.get_rep(team)
+        color = discord.Color.red() if team == 1 else discord.Color.blue()
+
+        if at == "map_ban":
+            embed = discord.Embed(
+                title=f"🗺️ Takım {team} — Harita Banlıyor",
+                description=f"{rep.mention} banlamak istediğin haritayı seç.",
+                color=color,
+            )
+            view = TeamMapBanView(self, team, rep)
+        else:
+            verb  = "banlamak" if at == "civ_ban" else "seçmek"
+            title = "Civ Banlıyor" if at == "civ_ban" else "Civ Seçiyor"
+            embed = discord.Embed(
+                title=f"Takım {team} — {title}",
+                description=f"{rep.mention} {verb} istediğin medeniyetin emojisini bu mesaja ekle, ardından butona bas.",
+                color=color,
+            )
+            view = TeamCivActionView(self, at, team, rep)
+
+        self.prompt_msg = await channel.send(embed=embed, view=view)
+
+    async def _finalize(self, channel: discord.TextChannel):
+        t1_picks = [c for t, c in self.picked_civs if t == 1]
+        t2_picks = [c for t, c in self.picked_civs if t == 2]
+
+        embed = discord.Embed(
+            title=f"🗺️ {self.selected_map} — Draft Tamamlandı!",
+            color=discord.Color.gold(),
+        )
+        embed.add_field(
+            name="🔴 Takım 1",
+            value="\n".join(f"{civ_emoji_str(c)} {c}" for c in t1_picks) or "—",
+            inline=True,
+        )
+        embed.add_field(
+            name="🔵 Takım 2",
+            value="\n".join(f"{civ_emoji_str(c)} {c}" for c in t2_picks) or "—",
+            inline=True,
+        )
+        mentions = " ".join(m.mention for m in self.all_players)
+        await channel.send(content=mentions, embed=embed)
+        active_team_games.pop(channel.id, None)
+
+
+class TeamSelectionView(discord.ui.View):
+    def __init__(self, game: TeamGame):
+        super().__init__(timeout=60)
+        self.game = game
+
+    @discord.ui.button(label="🔴 Takım 1", style=discord.ButtonStyle.danger)
+    async def team1_btn(self, interaction: discord.Interaction, _btn):
+        await self._select(interaction, 1)
+
+    @discord.ui.button(label="🔵 Takım 2", style=discord.ButtonStyle.primary)
+    async def team2_btn(self, interaction: discord.Interaction, _btn):
+        await self._select(interaction, 2)
+
+    async def _select(self, interaction: discord.Interaction, chosen_team: int):
+        if interaction.user.id != self.game.rep2.id:
+            await interaction.response.send_message(
+                f"Bu seçim {self.game.rep2.display_name}'e ait!", ephemeral=True
+            )
+            return
+        self.game.assign_teams(chosen_team)
+        self.stop()
+        await interaction.response.edit_message(embed=self.game.build_summary_embed(), view=None)
+        self.game.summary_msg = await interaction.original_response()
+        await self.game._prompt_action(interaction.channel, self.game.current_action())
+
+
+class TeamMapBanView(discord.ui.View):
+    def __init__(self, game: TeamGame, team: int, rep: discord.Member):
+        super().__init__(timeout=None)
+        self.game = game
+        self.team = team
+        self.rep = rep
+
+        for map_name in game.available_maps:
+            emoji = next((e for n, e in MAPS if n == map_name), "🗺️")
+            btn = discord.ui.Button(label=map_name, emoji=emoji, style=discord.ButtonStyle.danger)
+            btn.callback = self._make_cb(map_name)
+            self.add_item(btn)
+
+    def _make_cb(self, map_name: str):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.rep.id:
+                await interaction.response.send_message(
+                    f"Şu an Takım {self.team}'in ({self.rep.display_name}) sırası!", ephemeral=True
+                )
+                return
+
+            self.game.available_maps.remove(map_name)
+            self.game.map_bans.append((self.team, map_name))
+            if len(self.game.available_maps) == 1:
+                self.game.selected_map = self.game.available_maps[0]
+
+            for item in self.children:
+                item.disabled = True
+            await interaction.response.edit_message(view=self)
+            await self.game.advance(interaction.channel)
+
+        return callback
+
+
+class TeamCivActionView(discord.ui.View):
+    def __init__(self, game: TeamGame, action_type: str, team: int, rep: discord.Member):
+        super().__init__(timeout=None)
+        self.game = game
+        self.action_type = action_type
+        self.team = team
+        self.rep = rep
+
+        label = "🚫 Banla" if action_type == "civ_ban" else "✅ Seç"
+        style = discord.ButtonStyle.danger if action_type == "civ_ban" else discord.ButtonStyle.success
+        btn = discord.ui.Button(label=label, style=style)
+        btn.callback = self._process
+        self.add_item(btn)
+
+    async def _process(self, interaction: discord.Interaction):
+        if interaction.user.id != self.rep.id:
+            await interaction.response.send_message(
+                f"Şu an Takım {self.team}'in ({self.rep.display_name}) sırası!", ephemeral=True
+            )
+            return
+
+        message = await interaction.channel.fetch_message(interaction.message.id)
+        civ: str | None = None
+        for reaction in message.reactions:
+            async for user in reaction.users():
+                if user.id == self.rep.id:
+                    civ = emoji_to_civ(str(reaction.emoji))
+                    break
+            if civ:
+                break
+
+        if not civ:
+            await interaction.response.send_message(
+                "Önce medeniyetin emojisini bu mesaja ekle, sonra butona bas.", ephemeral=True
+            )
+            return
+
+        used = {c for _, c in self.game.banned_civs} | {c for _, c in self.game.picked_civs}
+        if civ in used:
+            status = "banlandı" if civ in {c for _, c in self.game.banned_civs} else "seçildi"
+            await interaction.response.send_message(f"**{civ}** zaten {status}!", ephemeral=True)
+            return
+
+        if self.action_type == "civ_ban":
+            self.game.banned_civs.append((self.team, civ))
+        else:
+            self.game.picked_civs.append((self.team, civ))
+
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+        await self.game.advance(interaction.channel)
+
+
+# ===========================================================================
 # Slash Commands
 # ===========================================================================
+
+@bot.tree.command(name="team", description="2 takımlı draft: harita ban → civ ban → civ seçim")
+@app_commands.describe(opponent="Karşı takım temsilcisini etiketle")
+async def team_command(interaction: discord.Interaction, opponent: discord.Member):
+    if interaction.channel_id in active_team_games:
+        await interaction.response.send_message("Bu kanalda zaten aktif bir takım oyunu var!", ephemeral=True)
+        return
+
+    if opponent.bot or opponent.id == interaction.user.id:
+        await interaction.response.send_message("Geçerli bir oyuncu etiketle!", ephemeral=True)
+        return
+
+    players = get_voice_members(interaction)
+    if not players:
+        await interaction.response.send_message("❌ Bir ses kanalında olman gerekiyor!", ephemeral=True)
+        return
+
+    if len(players) % 2 != 0:
+        await interaction.response.send_message(
+            f"❌ Oyuncu sayısı çift olmalı! Şu an **{len(players)}** kişi var.", ephemeral=True
+        )
+        return
+
+    caller = interaction.guild.get_member(interaction.user.id)
+    if caller not in players or opponent not in players:
+        await interaction.response.send_message(
+            "Her iki oyuncu da aynı ses kanalında olmalı!", ephemeral=True
+        )
+        return
+
+    game = TeamGame(players, caller, opponent)
+    active_team_games[interaction.channel_id] = game
+
+    embed = discord.Embed(
+        title="🤝 Takım Seçimi",
+        description=(
+            f"{caller.mention} bir oyun kurdu.\n"
+            f"{opponent.mention} hangi takımda olmak istiyorsun?"
+        ),
+        color=discord.Color.blurple(),
+    )
+    await interaction.response.send_message(embed=embed, view=TeamSelectionView(game))
+
 
 @bot.tree.command(name="ffa", description="FFA: Harita oylaması → Civ ban → Lider havuzu dağıtımı")
 async def ffa_command(interaction: discord.Interaction):
