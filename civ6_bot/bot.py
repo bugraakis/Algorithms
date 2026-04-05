@@ -1035,7 +1035,7 @@ class AutoDraftCountView(discord.ui.View):
 # Slash Commands
 # ===========================================================================
 
-@bot.tree.command(name="team", description="2 takımlı draft: harita ban → civ ban → civ seçim")
+@bot.tree.command(name="team", description="2-team draft: map ban → civ ban → civ pick")
 @app_commands.describe(opponent="Karşı takım temsilcisini etiketle")
 async def team_command(interaction: discord.Interaction, opponent: discord.Member):
     if interaction.channel_id in active_team_games:
@@ -1078,7 +1078,7 @@ async def team_command(interaction: discord.Interaction, opponent: discord.Membe
     await interaction.response.send_message(embed=embed, view=TeamSelectionView(game))
 
 
-@bot.tree.command(name="ffa", description="FFA: Harita oylaması → Civ ban → Lider havuzu dağıtımı")
+@bot.tree.command(name="ffa", description="FFA: Map vote → Civ ban → Leader pool distribution")
 async def ffa_command(interaction: discord.Interaction):
     if interaction.channel_id in active_ffa_games:
         await interaction.response.send_message(
@@ -1107,7 +1107,7 @@ async def ffa_command(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(name="takim", description="Takımlı ban + draft başlatır.")
+@bot.tree.command(name="teamdraft", description="Multi-team leader ban + draft (voice channel)")
 async def teams_command(interaction: discord.Interaction):
     members = get_voice_members(interaction)
     if not members:
@@ -1264,44 +1264,59 @@ class IdTypeView(discord.ui.View):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="id", description="Maç sonucu gir veya istatistiklerine bak")
+@bot.tree.command(name="id", description="Submit match result or view your stats")
 async def id_command(interaction: discord.Interaction):
     await interaction.response.send_message(
         "Ne yapmak istiyorsun?", view=IdTypeView(), ephemeral=True
     )
 
 
-@bot.tree.command(name="autodraftffa", description="Oyuncu sayısı seç, lider ban yap → oyunculara havuz olarak dağıtılır")
+@bot.tree.command(name="autodraftffa", description="Pick player count, ban leaders → pools distributed automatically")
 async def autodraftffa_command(interaction: discord.Interaction):
     await interaction.response.send_message("Kaç oyuncu?", view=AutoDraftFfaCountView())
 
 
-@bot.tree.command(name="autodraftteam", description="Takım sayısı seç, lider ban yap → takımlara otomatik dağıtılır")
+@bot.tree.command(name="autodraftteam", description="Pick team count, ban leaders → pools distributed to teams automatically")
 async def autodraftteam_command(interaction: discord.Interaction):
     await interaction.response.send_message("Kaç takım olsun?", view=AutoDraftCountView())
 
 
-@bot.tree.command(name="yardim", description="Civ6 bot komutlarını listeler.")
+@bot.tree.command(name="help", description="List all Civ6 bot commands.")
 async def help_command(interaction: discord.Interaction):
-    embed = discord.Embed(title="📖 Civ6 Bot Komutları", color=discord.Color.blurple())
+    embed = discord.Embed(title="📖 Civ6 Bot Commands", color=discord.Color.blurple())
     embed.add_field(
         name="/ffa",
-        value=(
-            "Ses kanalındaki oyuncularla FFA başlatır.\n"
-            "1️⃣ Harita oylaması (butonlar, canlı güncelleme)\n"
-            "2️⃣ Herkes kendi mesajına civ emojisi koyar → Onayla\n"
-            "3️⃣ Kalan liderler eşit havuzlara bölünür"
-        ),
+        value="Map vote → civ ban (emoji) → leader pools distributed to voice channel players.",
         inline=False,
     )
     embed.add_field(
-        name="/takim",
-        value="Takımlı draft: takım sayısını seç → lider ban → dağıtım.",
+        name="/team @opponent",
+        value="2-team draft: map bans → civ bans → civ picks (sequential, turn-based).",
         inline=False,
     )
     embed.add_field(
-        name="⚙️ Emoji Ayarı",
-        value="`civ_emojis.py` dosyasına her medeniyetin Discord emojisini ekle.",
+        name="/teamdraft",
+        value="Multi-team leader ban + draft for voice channel players.",
+        inline=False,
+    )
+    embed.add_field(
+        name="/autodraftffa",
+        value="Pick player count + ban leaders → pools auto-distributed (no voice channel needed).",
+        inline=False,
+    )
+    embed.add_field(
+        name="/autodraftteam",
+        value="Pick team count + ban leaders → pools auto-distributed to teams.",
+        inline=False,
+    )
+    embed.add_field(
+        name="/id",
+        value="Submit FFA or team match results (scores saved) · View your stats.",
+        inline=False,
+    )
+    embed.add_field(
+        name="⚙️ Emoji Config",
+        value="Fill in `civ_emojis.py` with each civilization's Discord emoji.",
         inline=False,
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
