@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import random
+import string
 from collections import Counter
 import os
 from dotenv import load_dotenv
@@ -84,6 +85,12 @@ def get_voice_members(interaction: discord.Interaction) -> list[discord.Member]:
     if member is None or member.voice is None or member.voice.channel is None:
         return []
     return [m for m in member.voice.channel.members if not m.bot]
+
+
+def _make_match_id(prefix: str) -> str:
+    """Generate a short random match ID like FFA-A3K7X2."""
+    code = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    return f"{prefix}-{code}"
 
 
 def emoji_to_civ(emoji_str: str) -> str | None:
@@ -353,11 +360,13 @@ async def _finalize_ffa_pools(
         f"{civ_emoji_str(c)} **{c}**" for c in sorted(banned)
     ) or "Yok"
 
+    match_id = _make_match_id("FFA")
     header = discord.Embed(
         title=f"🗺️ {game.selected_map}  ·  ⚔️ FFA Draft Tamamlandı!",
         description=f"**Banlanan Medeniyetler:** {ban_summary}",
         color=discord.Color.gold(),
     )
+    header.set_footer(text=f"Maç ID: {match_id}")
     await channel.send(content=mentions, embed=header)
 
     for i, player in enumerate(game.players):
@@ -741,10 +750,12 @@ class TeamGame:
         t1_picks = [c for t, c in self.picked_civs if t == 1]
         t2_picks = [c for t, c in self.picked_civs if t == 2]
 
+        match_id = _make_match_id("TEAM")
         embed = discord.Embed(
             title=f"🗺️ {self.selected_map} — Draft Tamamlandı!",
             color=discord.Color.gold(),
         )
+        embed.set_footer(text=f"Maç ID: {match_id}")
         embed.add_field(
             name="🔴 Takım 1",
             value="\n".join(f"{civ_emoji_str(c)} {c}" for c in t1_picks) or "—",
@@ -1110,6 +1121,84 @@ async def teams_command(interaction: discord.Interaction):
     await interaction.response.send_message(
         content=f"Kaç takım olsun? ({len(members)} oyuncu)",
         view=TeamCountView(members),
+    )
+
+
+# ---------------------------------------------------------------------------
+# /id — maç sonucu kayıt
+# ---------------------------------------------------------------------------
+
+class FfaResultModal(discord.ui.Modal, title="FFA Maç Sonucu"):
+    results = discord.ui.TextInput(
+        label="Sıralama — her satıra bir oyuncu + medeniyet",
+        placeholder="@Oyuncu1 America\n@Oyuncu2 Greece\n@Oyuncu3 Japan",
+        style=discord.TextStyle.paragraph,
+        max_length=1500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        match_id = _make_match_id("FFA")
+        lines = [l.strip() for l in self.results.value.strip().splitlines() if l.strip()]
+        ranking = "\n".join(f"**{i + 1}.** {line}" for i, line in enumerate(lines))
+        embed = discord.Embed(
+            title="⚔️ FFA Maç Sonucu",
+            description=ranking or "—",
+            color=discord.Color.gold(),
+        )
+        embed.set_footer(text=f"Maç ID: {match_id}")
+        await interaction.response.send_message(embed=embed)
+
+
+class TeamerResultModal(discord.ui.Modal, title="Teamer Maç Sonucu"):
+    winners = discord.ui.TextInput(
+        label="Kazanan Takım",
+        placeholder="@Oyuncu1 America\n@Oyuncu2 Greece",
+        style=discord.TextStyle.paragraph,
+        max_length=700,
+    )
+    losers = discord.ui.TextInput(
+        label="Kaybeden Takım",
+        placeholder="@Oyuncu3 Japan\n@Oyuncu4 China",
+        style=discord.TextStyle.paragraph,
+        max_length=700,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        match_id = _make_match_id("TEAM")
+        w_lines = [l.strip() for l in self.winners.value.strip().splitlines() if l.strip()]
+        l_lines = [l.strip() for l in self.losers.value.strip().splitlines() if l.strip()]
+        embed = discord.Embed(title="🤝 Teamer Maç Sonucu", color=discord.Color.green())
+        embed.add_field(
+            name="🏆 Kazanan Takım",
+            value="\n".join(w_lines) or "—",
+            inline=False,
+        )
+        embed.add_field(
+            name="💀 Kaybeden Takım",
+            value="\n".join(l_lines) or "—",
+            inline=False,
+        )
+        embed.set_footer(text=f"Maç ID: {match_id}")
+        await interaction.response.send_message(embed=embed)
+
+
+class IdTypeView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    @discord.ui.button(label="⚔️ FFA", style=discord.ButtonStyle.primary)
+    async def ffa_btn(self, interaction: discord.Interaction, _btn):
+        await interaction.response.send_modal(FfaResultModal())
+
+    @discord.ui.button(label="🤝 Teamer", style=discord.ButtonStyle.success)
+    async def team_btn(self, interaction: discord.Interaction, _btn):
+        await interaction.response.send_modal(TeamerResultModal())
+
+
+@bot.tree.command(name="id", description="Maç sonucunu kaydet ve ID al")
+async def id_command(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "Maç türünü seç:", view=IdTypeView(), ephemeral=True
     )
 
 
