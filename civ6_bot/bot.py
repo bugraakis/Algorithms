@@ -3,12 +3,14 @@ from discord import app_commands
 from discord.ext import commands
 import random
 import string
+import re
 from collections import Counter
 import os
 from dotenv import load_dotenv
 
 from leaders import CIVS, LEADERS_BY_CIV, image_url
 from civ_emojis import CIV_EMOJIS
+import database as db
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -1128,6 +1130,23 @@ async def teams_command(interaction: discord.Interaction):
 # /id — maç sonucu kayıt
 # ---------------------------------------------------------------------------
 
+def _parse_mention_id(text: str) -> str | None:
+    m = re.search(r"<@!?(\d+)>", text)
+    return m.group(1) if m else None
+
+
+def _resolve_name(guild: discord.Guild, line: str) -> tuple[str | None, str]:
+    """Return (player_id, display_name) from a result line. id=None if no mention found."""
+    pid = _parse_mention_id(line)
+    if pid:
+        member = guild.get_member(int(pid))
+        name = member.display_name if member else f"<@{pid}>"
+    else:
+        pid = None
+        name = line.split()[0] if line.split() else line  # first word as fallback name
+    return pid, name
+
+
 class FfaResultModal(discord.ui.Modal, title="FFA Maç Sonucu"):
     results = discord.ui.TextInput(
         label="Sıralama — her satıra bir oyuncu + medeniyet",
@@ -1139,10 +1158,20 @@ class FfaResultModal(discord.ui.Modal, title="FFA Maç Sonucu"):
     async def on_submit(self, interaction: discord.Interaction):
         match_id = _make_match_id("FFA")
         lines = [l.strip() for l in self.results.value.strip().splitlines() if l.strip()]
-        ranking = "\n".join(f"**{i + 1}.** {line}" for i, line in enumerate(lines))
+        n = len(lines)
+
+        ranking_parts = []
+        for i, line in enumerate(lines):
+            pts = n - i                            # 1st → N pts, last → 1 pt
+            pid, name = _resolve_name(interaction.guild, line)
+            rest = line[line.index(">") + 1:].strip() if ">" in line else ""
+            ranking_parts.append(f"**{i + 1}.** {name}{' — ' + rest if rest else ''}  `+{pts} puan`")
+            if pid:
+                db.record_ffa(pid, name, pts)
+
         embed = discord.Embed(
             title="⚔️ FFA Maç Sonucu",
-            description=ranking or "—",
+            description="\n".join(ranking_parts) or "—",
             color=discord.Color.gold(),
         )
         embed.set_footer(text=f"Maç ID: {match_id}")
@@ -1167,17 +1196,19 @@ class TeamerResultModal(discord.ui.Modal, title="Teamer Maç Sonucu"):
         match_id = _make_match_id("TEAM")
         w_lines = [l.strip() for l in self.winners.value.strip().splitlines() if l.strip()]
         l_lines = [l.strip() for l in self.losers.value.strip().splitlines() if l.strip()]
+
+        for line in w_lines:
+            pid, name = _resolve_name(interaction.guild, line)
+            if pid:
+                db.record_team(pid, name, won=True)
+        for line in l_lines:
+            pid, name = _resolve_name(interaction.guild, line)
+            if pid:
+                db.record_team(pid, name, won=False)
+
         embed = discord.Embed(title="🤝 Teamer Maç Sonucu", color=discord.Color.green())
-        embed.add_field(
-            name="🏆 Kazanan Takım",
-            value="\n".join(w_lines) or "—",
-            inline=False,
-        )
-        embed.add_field(
-            name="💀 Kaybeden Takım",
-            value="\n".join(l_lines) or "—",
-            inline=False,
-        )
+        embed.add_field(name="🏆 Kazanan Takım", value="\n".join(w_lines) or "—", inline=False)
+        embed.add_field(name="💀 Kaybeden Takım", value="\n".join(l_lines) or "—", inline=False)
         embed.set_footer(text=f"Maç ID: {match_id}")
         await interaction.response.send_message(embed=embed)
 
@@ -1186,19 +1217,57 @@ class IdTypeView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=60)
 
-    @discord.ui.button(label="⚔️ FFA", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="⚔️ FFA Sonucu Gir", style=discord.ButtonStyle.primary)
     async def ffa_btn(self, interaction: discord.Interaction, _btn):
         await interaction.response.send_modal(FfaResultModal())
 
-    @discord.ui.button(label="🤝 Teamer", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="🤝 Teamer Sonucu Gir", style=discord.ButtonStyle.success)
     async def team_btn(self, interaction: discord.Interaction, _btn):
         await interaction.response.send_modal(TeamerResultModal())
 
+    @discord.ui.button(label="📊 İstatistiklerim", style=discord.ButtonStyle.secondary)
+    async def stats_btn(self, interaction: discord.Interaction, _btn):
+        uid = str(interaction.user.id)
+        name = interaction.user.display_name
 
-@bot.tree.command(name="id", description="Maç sonucunu kaydet ve ID al")
+        ffa  = db.ffa_player(uid)
+        team = db.team_player(uid)
+
+        embed = discord.Embed(
+            title=f"📊 {name} — İstatistikler",
+            color=discord.Color.blurple(),
+        )
+
+        if ffa:
+            avg = round(ffa["points"] / ffa["games"], 2) if ffa["games"] else 0
+            embed.add_field(
+                name="⚔️ FFA",
+                value=f"Puan: **{ffa['points']}**\nMaç: {ffa['games']}  ·  Ort: {avg}",
+                inline=True,
+            )
+        else:
+            embed.add_field(name="⚔️ FFA", value="Kayıt yok", inline=True)
+
+        if team:
+            winrate = round(100 * team["wins"] / team["games"], 1) if team["games"] else 0
+            embed.add_field(
+                name="🤝 Teamer",
+                value=(
+                    f"Puan: **{team['points']}**\n"
+                    f"G/M: {team['wins']}/{team['losses']}  ·  %{winrate} kazanma"
+                ),
+                inline=True,
+            )
+        else:
+            embed.add_field(name="🤝 Teamer", value="Kayıt yok", inline=True)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="id", description="Maç sonucu gir veya istatistiklerine bak")
 async def id_command(interaction: discord.Interaction):
     await interaction.response.send_message(
-        "Maç türünü seç:", view=IdTypeView(), ephemeral=True
+        "Ne yapmak istiyorsun?", view=IdTypeView(), ephemeral=True
     )
 
 
@@ -1244,6 +1313,7 @@ async def help_command(interaction: discord.Interaction):
 
 @bot.event
 async def on_ready():
+    db.init_db()
     await bot.tree.sync()
     print(f"✅ {bot.user} olarak giriş yapıldı.")
     print("✅ Slash komutları senkronize edildi.")
