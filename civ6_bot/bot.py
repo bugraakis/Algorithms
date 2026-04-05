@@ -1247,6 +1247,110 @@ async def autodraftteam_command(interaction: discord.Interaction):
     await interaction.response.send_message("Kaç takım olsun?", view=AutoDraftCountView())
 
 
+_LB_PER_PAGE = 10
+
+
+class LeaderboardView(discord.ui.View):
+    def __init__(self, mode: str = "ffa"):
+        super().__init__(timeout=180)
+        self.mode = mode
+        self.page = 0
+        self._data: list = []
+        self._refresh_data()
+        self._rebuild()
+
+    def _refresh_data(self):
+        self._data = db.ffa_leaderboard() if self.mode == "ffa" else db.team_leaderboard()
+
+    def _total_pages(self) -> int:
+        return max(1, (len(self._data) + _LB_PER_PAGE - 1) // _LB_PER_PAGE)
+
+    def build_embed(self) -> discord.Embed:
+        start = self.page * _LB_PER_PAGE
+        rows  = self._data[start : start + _LB_PER_PAGE]
+        medals = ["🥇", "🥈", "🥉"]
+
+        lines = []
+        for i, row in enumerate(rows):
+            rank   = start + i + 1
+            prefix = medals[rank - 1] if rank <= 3 else f"**{rank}.**"
+            if self.mode == "ffa":
+                lines.append(
+                    f"{prefix} {row['player_tag']} — "
+                    f"ELO **{row['rating']}** · {row['games']} maç · "
+                    f"%{row['win_pct'] or 0} 1.sıra"
+                )
+            else:
+                lines.append(
+                    f"{prefix} {row['player_tag']} — "
+                    f"ELO **{row['rating']}** · "
+                    f"{row['wins']}G/{row['losses']}M · %{row['win_pct'] or 0}"
+                )
+
+        title = "⚔️ FFA Liderlik Tablosu" if self.mode == "ffa" else "🤝 Teamer Liderlik Tablosu"
+        color = discord.Color.gold() if self.mode == "ffa" else discord.Color.green()
+        embed = discord.Embed(
+            title=title,
+            description="\n".join(lines) if lines else "Henüz kayıt yok.",
+            color=color,
+        )
+        embed.set_footer(text=f"Sayfa {self.page + 1}/{self._total_pages()}  ·  {len(self._data)} oyuncu")
+        return embed
+
+    def _rebuild(self):
+        self.clear_items()
+        total = self._total_pages()
+
+        ffa_btn = discord.ui.Button(
+            label="⚔️ FFA",
+            style=discord.ButtonStyle.primary if self.mode == "ffa" else discord.ButtonStyle.secondary,
+        )
+        ffa_btn.callback = self._set_mode("ffa")
+        self.add_item(ffa_btn)
+
+        team_btn = discord.ui.Button(
+            label="🤝 Teamer",
+            style=discord.ButtonStyle.success if self.mode == "team" else discord.ButtonStyle.secondary,
+        )
+        team_btn.callback = self._set_mode("team")
+        self.add_item(team_btn)
+
+        if total > 1:
+            prev = discord.ui.Button(
+                label="◀", style=discord.ButtonStyle.secondary, disabled=self.page == 0
+            )
+            prev.callback = self._go_page(-1)
+            self.add_item(prev)
+
+            nxt = discord.ui.Button(
+                label="▶", style=discord.ButtonStyle.secondary, disabled=self.page >= total - 1
+            )
+            nxt.callback = self._go_page(1)
+            self.add_item(nxt)
+
+    def _set_mode(self, mode: str):
+        async def cb(interaction: discord.Interaction):
+            self.mode = mode
+            self.page = 0
+            self._refresh_data()
+            self._rebuild()
+            await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        return cb
+
+    def _go_page(self, delta: int):
+        async def cb(interaction: discord.Interaction):
+            self.page += delta
+            self._rebuild()
+            await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        return cb
+
+
+@bot.tree.command(name="leaderboard", description="FFA and team ELO leaderboards with pagination")
+async def leaderboard_command(interaction: discord.Interaction):
+    view  = LeaderboardView("ffa")
+    await interaction.response.send_message(embed=view.build_embed(), view=view)
+
+
 class MostPlayedTypeView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=60)

@@ -131,15 +131,14 @@ def record_ffa(
     return results
 
 
-def ffa_leaderboard(limit: int = 15) -> list[sqlite3.Row]:
+def ffa_leaderboard() -> list[sqlite3.Row]:
     with _conn() as c:
         return c.execute("""
             SELECT player_tag, rating, games, wins,
                    ROUND(100.0 * wins / NULLIF(games, 0), 1) AS win_pct
             FROM ffa_scores
             ORDER BY rating DESC
-            LIMIT ?
-        """, (limit,)).fetchall()
+        """).fetchall()
 
 
 def ffa_player(player_id: str) -> sqlite3.Row | None:
@@ -210,15 +209,14 @@ def record_team(
     return winner_results, loser_results
 
 
-def team_leaderboard(limit: int = 15) -> list[sqlite3.Row]:
+def team_leaderboard() -> list[sqlite3.Row]:
     with _conn() as c:
         return c.execute("""
             SELECT player_tag, rating, games, wins, losses,
                    ROUND(100.0 * wins / NULLIF(games, 0), 1) AS win_pct
             FROM team_scores
             ORDER BY rating DESC
-            LIMIT ?
-        """, (limit,)).fetchall()
+        """).fetchall()
 
 
 def team_player(player_id: str) -> sqlite3.Row | None:
