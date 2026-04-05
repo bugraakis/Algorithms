@@ -21,12 +21,12 @@ LEADER_EMOJI_NAMES: dict[str, str | None] = {
     "Pedro II":                           "Pedro",
     # Byzantium
     "Basil II":                           "Basil",
-    "Theodora":                           None,
+    "Theodora":                           "Theodora",
     # Canada
     "Wilfrid Laurier":                    "WilfridLaurier",
     # China
-    "Kublai Khan (China)":                "KublaiKhan",
-    "Qin (Mandate of Heaven)":            None,
+    "Kublai Khan (China)":                "KublaiKhanChina",
+    "Qin (Mandate of Heaven)":            "QinShiHuang",
     "Qin (Unifier)":                      "QinUnifier",
     "Wu Zetian":                          "WunZetian",
     "Yongle":                             "Yongle",
@@ -37,8 +37,8 @@ LEADER_EMOJI_NAMES: dict[str, str | None] = {
     "Cleopatra (Ptolemaic)":              "PtolemicCleopatra",
     "Ramses II":                          "Ramses",
     # England
-    "Eleanor of Aquitaine (England)":     "Eleanor",
-    "Elizabeth I":                        None,
+    "Eleanor of Aquitaine (England)":     "ElanorEngland",
+    "Elizabeth I":                        "ElizabethI",
     "Victoria (Age of Empire)":           "Victoria",
     "Victoria (Age of Steam)":            "Victoria",
     # Ethiopia
@@ -46,15 +46,15 @@ LEADER_EMOJI_NAMES: dict[str, str | None] = {
     # France
     "Catherine de Medici (Black Queen)":  "CatherineBlackQueen",
     "Catherine de Medici (Magnificence)": "CatherineMagnificient",
-    "Eleanor of Aquitaine (France)":      "Eleanor",
+    "Eleanor of Aquitaine (France)":      "ElanorFrance",
     # Gaul
     "Ambiorix":                           "Ambiorix",
-    "Vercingetorix":                      None,
+    "Vercingetorix":                      "Vercingetorix",
     # Georgia
     "Tamar":                              "Tamar",
     # Germany
     "Frederick Barbarossa":               "FrederickBarbarossa",
-    "Ludwig II":                          None,
+    "Ludwig II":                          "LudwigII",
     # Gran Colombia
     "Simón Bolívar":                      "SimonBolivar",
     # Greece
@@ -65,7 +65,7 @@ LEADER_EMOJI_NAMES: dict[str, str | None] = {
     # Inca
     "Pachacuti":                          "Pachacuti",
     # India
-    "Chandragupta":                       None,
+    "Chandragupta":                       "Chandragupta",
     "Gandhi":                             "Gandhi",
     # Indonesia
     "Gitarja":                            "Gitarja",
@@ -78,7 +78,7 @@ LEADER_EMOJI_NAMES: dict[str, str | None] = {
     "Mvemba a Nzinga":                    "MvembaaNzinga",
     "Nzinga Mbande":                      "QueenMbandeNzinga",
     # Korea
-    "Sejong":                             None,
+    "Sejong":                             "Sejong",
     "Seondeok":                           "Seondeok",
     # Macedon
     "Alexander":                          "Alexander",
@@ -95,7 +95,7 @@ LEADER_EMOJI_NAMES: dict[str, str | None] = {
     "Te' K'inich II":                     "TeKinichII",
     # Mongolia
     "Genghis Khan":                       "GenghisKhan",
-    "Kublai Khan (Mongolia)":             "KublaiKhan",
+    "Kublai Khan (Mongolia)":             "KublaiKhanMongolia",
     # Netherlands
     "Wilhelmina":                         "Wilhelmina",
     # Norway
