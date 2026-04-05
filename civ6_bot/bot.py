@@ -247,55 +247,59 @@ class MapSelectionView(discord.ui.View):
 
 
 # ---------------------------------------------------------------------------
-# Per-player Ban View
+# Shared Ban Phase View  (tek mesaj, herkes aynı butona basar)
 # ---------------------------------------------------------------------------
 
-class PlayerBanView(discord.ui.View):
-    """One of these is posted per player in the channel during the ban phase."""
+class BanPhaseView(discord.ui.View):
+    """Single message shared by all players. Each reacts with a civ emoji then clicks Confirm."""
 
-    def __init__(self, player: discord.Member, game: FFAGame):
+    def __init__(self, game: FFAGame):
         super().__init__(timeout=None)
-        self.player = player
         self.game = game
+        self.message: discord.Message | None = None  # set after send
 
-    def _build_waiting_embed(self) -> discord.Embed:
-        # Build a reference list of configured civ emojis
-        civ_lines = [
-            f"{civ_emoji_str(c)} {c}"
-            for c in CIVS
-            if CIV_EMOJIS.get(c)
-        ]
-        ref = "\n".join(civ_lines) if civ_lines else "*(civ_emojis.py henüz doldurulmadı)*"
+    def build_embed(self) -> discord.Embed:
+        status_lines = []
+        for player in self.game.players:
+            if player.id in self.game.bans:
+                civ = self.game.bans[player.id]
+                status_lines.append(f"✅ {player.mention} → {civ_emoji_str(civ)} **{civ}**")
+            else:
+                status_lines.append(f"⏳ {player.mention}")
+
+        civ_ref = "  ".join(
+            f"{civ_emoji_str(c)}`{c}`" for c in CIVS if CIV_EMOJIS.get(c)
+        ) or "*(civ_emojis.py henüz doldurulmadı)*"
 
         embed = discord.Embed(
-            title=f"🎯 {self.player.display_name} — Ban Seçimi",
+            title="🚫 Medeniyet Ban Aşaması",
             description=(
-                f"{self.player.mention} banlamak istediğin medeniyetin emojisini "
-                "**bu mesaja** ekle, sonra **✅ Onayla**'ya bas."
+                "Banlamak istediğin medeniyetin emojisini **bu mesaja** ekle, "
+                "ardından **✅ Onayla**'ya bas. Herkes aynı anda yapabilir."
             ),
-            color=discord.Color.blurple(),
+            color=discord.Color.orange(),
         )
-        embed.add_field(name="Medeniyet Emojileri", value=ref[:1024], inline=False)
+        embed.add_field(name="Durum", value="\n".join(status_lines), inline=False)
+        embed.add_field(name="Medeniyet Emojileri", value=civ_ref[:1024], inline=False)
         return embed
 
     @discord.ui.button(label="✅ Onayla", style=discord.ButtonStyle.green)
     async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.player.id:
-            await interaction.response.send_message(
-                "Bu buton sana ait değil!", ephemeral=True
-            )
+        player = next((p for p in self.game.players if p.id == interaction.user.id), None)
+        if not player:
+            await interaction.response.send_message("Bu oyuna dahil değilsin!", ephemeral=True)
             return
 
-        if self.player.id in self.game.bans:
+        if player.id in self.game.bans:
             await interaction.response.send_message("Zaten ban yaptın!", ephemeral=True)
             return
 
-        # Read reactions on this message to find which civ the player picked
+        # Read this specific player's reactions on the shared message
         message = await interaction.channel.fetch_message(interaction.message.id)
         banned_civ: str | None = None
         for reaction in message.reactions:
             async for user in reaction.users():
-                if user.id == self.player.id:
+                if user.id == player.id:
                     banned_civ = emoji_to_civ(str(reaction.emoji))
                     break
             if banned_civ:
@@ -303,24 +307,19 @@ class PlayerBanView(discord.ui.View):
 
         if not banned_civ:
             await interaction.response.send_message(
-                "Önce banlamak istediğin medeniyetin emojisini bu mesaja ekle, "
-                "sonra Onayla'ya bas.",
+                "Önce banlamak istediğin medeniyetin emojisini bu mesaja ekle, sonra Onayla'ya bas.",
                 ephemeral=True,
             )
             return
 
-        self.game.record_ban(self.player.id, banned_civ)
-        button.disabled = True
-
-        embed = discord.Embed(
-            title=f"🚫 {self.player.display_name} banladı",
-            description=f"{civ_emoji_str(banned_civ)} **{banned_civ}**",
-            color=discord.Color.red(),
-        )
-        await interaction.response.edit_message(embed=embed, view=self)
+        self.game.record_ban(player.id, banned_civ)
+        embed = self.build_embed()
 
         if self.game.all_bans_done():
-            await _finalize_ffa_pools(interaction.channel, self.game)
+            await interaction.response.edit_message(embed=embed, view=self)
+            await _finalize_ffa_pools(interaction.channel, self.game, ban_message=self.message)
+        else:
+            await interaction.response.edit_message(embed=embed, view=self)
 
 
 # ---------------------------------------------------------------------------
@@ -328,23 +327,16 @@ class PlayerBanView(discord.ui.View):
 # ---------------------------------------------------------------------------
 
 async def _start_ban_phase(channel: discord.TextChannel, game: FFAGame):
-    header = discord.Embed(
-        title="🚫 Medeniyet Ban Aşaması",
-        description=(
-            "Her oyuncu **kendi mesajına** banlamak istediği medeniyetin emojisini eklesin, "
-            "ardından **✅ Onayla** butonuna bassın.\n"
-            "Herkes aynı anda ban yapabilir — sıra yok!"
-        ),
-        color=discord.Color.orange(),
-    )
-    await channel.send(embed=header)
-
-    for player in game.players:
-        view = PlayerBanView(player, game)
-        await channel.send(embed=view._build_waiting_embed(), view=view)
+    view = BanPhaseView(game)
+    msg = await channel.send(embed=view.build_embed(), view=view)
+    view.message = msg
 
 
-async def _finalize_ffa_pools(channel: discord.TextChannel, game: FFAGame):
+async def _finalize_ffa_pools(
+    channel: discord.TextChannel,
+    game: FFAGame,
+    ban_message: discord.Message | None = None,
+):
     banned = game.get_banned_civs()
     pools = game.distribute_pools()
     mentions = " ".join(m.mention for m in game.players)
@@ -363,6 +355,13 @@ async def _finalize_ffa_pools(channel: discord.TextChannel, game: FFAGame):
     for i, player in enumerate(game.players):
         embed = build_pool_embed(player, pools[player], PLAYER_COLORS[i % len(PLAYER_COLORS)])
         await channel.send(content=player.mention, embed=embed)
+
+    # Delete the ban phase message to keep the channel clean
+    if ban_message:
+        try:
+            await ban_message.delete()
+        except discord.HTTPException:
+            pass
 
     active_ffa_games.pop(channel.id, None)
 
