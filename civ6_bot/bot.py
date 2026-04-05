@@ -875,6 +875,77 @@ class TeamCivActionView(discord.ui.View):
 
 
 # ===========================================================================
+# /autodraftffa — oyuncu sayısı seç + ban → liderler oyunculara havuz olarak düşer
+# ===========================================================================
+
+class AutoDraftFfaSession:
+    def __init__(self, player_count: int):
+        self.player_count = player_count
+        self.banned: set[tuple[str, str]] = set()
+
+    def ban_status(self) -> str:
+        banned_text = (
+            ", ".join(f"{c} — {l}" for c, l in sorted(self.banned))
+            if self.banned
+            else "Henüz ban yok"
+        )
+        return (
+            f"🚫 **Ban Aşaması** — {self.player_count} Oyuncu\n"
+            f"Toplam lider: **{len(ALL_LEADERS)}**  |  "
+            f"Banlanan: **{len(self.banned)}**  |  "
+            f"Kalan: **{len(ALL_LEADERS) - len(self.banned)}**\n"
+            f"Banlananlar: {banned_text}"
+        )
+
+    async def finalize(self, interaction: discord.Interaction):
+        remaining = [p for p in ALL_LEADERS if p not in self.banned]
+        random.shuffle(remaining)
+        n = self.player_count
+        per_player = len(remaining) // n
+        pools = [remaining[i * per_player : (i + 1) * per_player] for i in range(n)]
+        for i, pair in enumerate(remaining[n * per_player :]):
+            pools[i].append(pair)
+
+        embeds = []
+        for i, pool in enumerate(pools):
+            embed = discord.Embed(
+                title=f"🎴 Oyuncu {i + 1}",
+                description=f"{len(pool)} lider",
+                color=PLAYER_COLORS[i % len(PLAYER_COLORS)],
+            )
+            for civ, leader in pool:
+                embed.add_field(name=leader, value=civ, inline=True)
+            embeds.append(embed)
+
+        first, rest = embeds[:10], embeds[10:]
+        await interaction.response.edit_message(content=None, embeds=first, view=None)
+        for chunk in [rest[j : j + 10] for j in range(0, len(rest), 10)]:
+            await interaction.followup.send(embeds=chunk)
+
+
+class AutoDraftFfaCountView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+        sel = discord.ui.Select(
+            placeholder="Kaç oyuncu?",
+            options=[
+                discord.SelectOption(label=f"{n} Oyuncu", value=str(n))
+                for n in range(2, 13)
+            ],
+        )
+        sel.callback = self._on_select
+        self.add_item(sel)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        self.stop()
+        n = int(interaction.data["values"][0])
+        session = AutoDraftFfaSession(n)
+        await interaction.response.edit_message(
+            content=session.ban_status(), view=TeamBanPhaseView(session)
+        )
+
+
+# ===========================================================================
 # /autodraftteam — takım sayısı seç + ban → liderler takımlara otomatik düşer
 # ===========================================================================
 
@@ -1040,6 +1111,11 @@ async def teams_command(interaction: discord.Interaction):
         content=f"Kaç takım olsun? ({len(members)} oyuncu)",
         view=TeamCountView(members),
     )
+
+
+@bot.tree.command(name="autodraftffa", description="Oyuncu sayısı seç, lider ban yap → oyunculara havuz olarak dağıtılır")
+async def autodraftffa_command(interaction: discord.Interaction):
+    await interaction.response.send_message("Kaç oyuncu?", view=AutoDraftFfaCountView())
 
 
 @bot.tree.command(name="autodraftteam", description="Takım sayısı seç, lider ban yap → takımlara otomatik dağıtılır")
