@@ -1063,16 +1063,26 @@ class FfaResultModal(discord.ui.Modal, title="FFA Maç Sonucu"):
     async def on_submit(self, interaction: discord.Interaction):
         match_id = _make_match_id("FFA")
         lines = [l.strip() for l in self.results.value.strip().splitlines() if l.strip()]
-        n = len(lines)
+
+        # Build ordered player list for ELO calculation
+        ordered: list[tuple[str, str]] = []   # (player_id, display_name)
+        for line in lines:
+            pid, name = _resolve_name(interaction.guild, line)
+            if pid:
+                ordered.append((pid, name))
+
+        elo_results = db.record_ffa(ordered) if ordered else []
+        elo_by_id   = {r.player_id: r for r in elo_results}
 
         ranking_parts = []
         for i, line in enumerate(lines):
-            pts = n - i                            # 1st → N pts, last → 1 pt
-            pid, name = _resolve_name(interaction.guild, line)
-            rest = line[line.index(">") + 1:].strip() if ">" in line else ""
-            ranking_parts.append(f"**{i + 1}.** {name}{' — ' + rest if rest else ''}  `+{pts} puan`")
-            if pid:
-                db.record_ffa(pid, name, pts)
+            pid, _ = _resolve_name(interaction.guild, line)
+            suffix = ""
+            if pid and pid in elo_by_id:
+                r = elo_by_id[pid]
+                sign  = "+" if r.delta >= 0 else ""
+                suffix = f"  `{r.old_rating} → {r.new_rating} ({sign}{r.delta})`"
+            ranking_parts.append(f"**{i + 1}.** {line}{suffix}")
 
         embed = discord.Embed(
             title="⚔️ FFA Maç Sonucu",
@@ -1102,18 +1112,33 @@ class TeamerResultModal(discord.ui.Modal, title="Teamer Maç Sonucu"):
         w_lines = [l.strip() for l in self.winners.value.strip().splitlines() if l.strip()]
         l_lines = [l.strip() for l in self.losers.value.strip().splitlines() if l.strip()]
 
-        for line in w_lines:
-            pid, name = _resolve_name(interaction.guild, line)
-            if pid:
-                db.record_team(pid, name, won=True)
-        for line in l_lines:
-            pid, name = _resolve_name(interaction.guild, line)
-            if pid:
-                db.record_team(pid, name, won=False)
+        w_players = [(pid, name) for line in w_lines
+                     for pid, name in [_resolve_name(interaction.guild, line)] if pid]
+        l_players = [(pid, name) for line in l_lines
+                     for pid, name in [_resolve_name(interaction.guild, line)] if pid]
+
+        w_results, l_results = (
+            db.record_team(w_players, l_players)
+            if w_players and l_players
+            else ([], [])
+        )
+        elo_by_id = {r.player_id: r for r in w_results + l_results}
+
+        def fmt_lines(raw_lines: list[str]) -> str:
+            out = []
+            for line in raw_lines:
+                pid, _ = _resolve_name(interaction.guild, line)
+                suffix = ""
+                if pid and pid in elo_by_id:
+                    r    = elo_by_id[pid]
+                    sign = "+" if r.delta >= 0 else ""
+                    suffix = f"  `{r.old_rating} → {r.new_rating} ({sign}{r.delta})`"
+                out.append(f"{line}{suffix}")
+            return "\n".join(out) or "—"
 
         embed = discord.Embed(title="🤝 Teamer Maç Sonucu", color=discord.Color.green())
-        embed.add_field(name="🏆 Kazanan Takım", value="\n".join(w_lines) or "—", inline=False)
-        embed.add_field(name="💀 Kaybeden Takım", value="\n".join(l_lines) or "—", inline=False)
+        embed.add_field(name="🏆 Kazanan Takım", value=fmt_lines(w_lines), inline=False)
+        embed.add_field(name="💀 Kaybeden Takım", value=fmt_lines(l_lines), inline=False)
         embed.set_footer(text=f"Maç ID: {match_id}")
         await interaction.response.send_message(embed=embed)
 
@@ -1144,27 +1169,30 @@ class IdTypeView(discord.ui.View):
         )
 
         if ffa:
-            avg = round(ffa["points"] / ffa["games"], 2) if ffa["games"] else 0
+            win_pct = round(100 * ffa["wins"] / ffa["games"], 1) if ffa["games"] else 0
             embed.add_field(
                 name="⚔️ FFA",
-                value=f"Puan: **{ffa['points']}**\nMaç: {ffa['games']}  ·  Ort: {avg}",
-                inline=True,
-            )
-        else:
-            embed.add_field(name="⚔️ FFA", value="Kayıt yok", inline=True)
-
-        if team:
-            winrate = round(100 * team["wins"] / team["games"], 1) if team["games"] else 0
-            embed.add_field(
-                name="🤝 Teamer",
                 value=(
-                    f"Puan: **{team['points']}**\n"
-                    f"G/M: {team['wins']}/{team['losses']}  ·  %{winrate} kazanma"
+                    f"ELO: **{ffa['rating']}**\n"
+                    f"Maç: {ffa['games']}  ·  1. bitiş: {ffa['wins']}  ·  %{win_pct}"
                 ),
                 inline=True,
             )
         else:
-            embed.add_field(name="🤝 Teamer", value="Kayıt yok", inline=True)
+            embed.add_field(name="⚔️ FFA", value=f"Kayıt yok (başlangıç: {db.FFA_START})", inline=True)
+
+        if team:
+            win_pct = round(100 * team["wins"] / team["games"], 1) if team["games"] else 0
+            embed.add_field(
+                name="🤝 Teamer",
+                value=(
+                    f"ELO: **{team['rating']}**\n"
+                    f"G/M: {team['wins']}/{team['losses']}  ·  %{win_pct} kazanma"
+                ),
+                inline=True,
+            )
+        else:
+            embed.add_field(name="🤝 Teamer", value=f"Kayıt yok (başlangıç: {db.TEAM_START})", inline=True)
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
