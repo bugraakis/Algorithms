@@ -1042,15 +1042,20 @@ def _parse_mention_id(text: str) -> str | None:
 
 def _parse_line(guild: discord.Guild, line: str) -> tuple[str | None, str, str | None]:
     """Parse a result line into (player_id, display_name, civ_name).
-    Expected format: '@Mention CivName'  or  'Name CivName'
+    Expected format: '@Mention <civ_emoji>'  or  '@Mention CivName'
+    Tries emoji_to_civ() on the remainder first; falls back to treating it as a civ name.
     player_id is None if no Discord mention found.
-    civ_name is None if nothing follows the name.
+    civ_name is None if nothing follows the mention.
     """
     pid = _parse_mention_id(line)
     if pid:
         member = guild.get_member(int(pid))
         name = member.display_name if member else f"<@{pid}>"
-        civ  = re.sub(r"<@!?\d+>", "", line).strip() or None
+        remainder = re.sub(r"<@!?\d+>", "", line).strip() or None
+        if remainder:
+            civ = emoji_to_civ(remainder) or remainder
+        else:
+            civ = None
     else:
         parts = line.split(None, 1)
         name  = parts[0] if parts else line
@@ -1163,6 +1168,117 @@ class TeamerResultModal(discord.ui.Modal, title="Teamer Maç Sonucu"):
         await interaction.response.send_message(embed=embed)
 
 
+# ---------------------------------------------------------------------------
+# /report modals — match ID provided by user, civ emoji supported
+# ---------------------------------------------------------------------------
+
+class FfaReportModal(discord.ui.Modal, title="FFA Maç Sonucu"):
+    results = discord.ui.TextInput(
+        label="Sıralama (1.→son) — @oyuncu + medeniyet emojisi",
+        placeholder="@Oyuncu1 <:america:123>\n@Oyuncu2 <:greece:456>\n@Oyuncu3 <:japan:789>",
+        style=discord.TextStyle.paragraph,
+        max_length=1500,
+    )
+
+    def __init__(self, match_id: str):
+        super().__init__()
+        self.match_id = match_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        lines = [l.strip() for l in self.results.value.strip().splitlines() if l.strip()]
+
+        ordered: list[tuple[str, str]] = []
+        for line in lines:
+            pid, name, civ = _parse_line(interaction.guild, line)
+            if pid:
+                ordered.append((pid, name))
+                if civ:
+                    db.record_civ_play(pid, name, civ, "ffa")
+
+        elo_results = db.record_ffa(ordered) if ordered else []
+        elo_by_id   = {r.player_id: r for r in elo_results}
+
+        ranking_parts = []
+        for i, line in enumerate(lines):
+            pid, _, _ = _parse_line(interaction.guild, line)
+            suffix = ""
+            if pid and pid in elo_by_id:
+                r    = elo_by_id[pid]
+                sign = "+" if r.delta >= 0 else ""
+                suffix = f"  `{r.old_rating} → {r.new_rating} ({sign}{r.delta})`"
+            ranking_parts.append(f"**{i + 1}.** {line}{suffix}")
+
+        embed = discord.Embed(
+            title="⚔️ FFA Maç Sonucu",
+            description="\n".join(ranking_parts) or "—",
+            color=discord.Color.gold(),
+        )
+        embed.set_footer(text=f"Maç ID: {self.match_id}")
+        await interaction.response.send_message(embed=embed)
+
+
+class TeamerReportModal(discord.ui.Modal, title="Teamer Maç Sonucu"):
+    winners = discord.ui.TextInput(
+        label="Kazanan Takım — @oyuncu + medeniyet emojisi",
+        placeholder="@Oyuncu1 <:america:123>\n@Oyuncu2 <:greece:456>",
+        style=discord.TextStyle.paragraph,
+        max_length=700,
+    )
+    losers = discord.ui.TextInput(
+        label="Kaybeden Takım — @oyuncu + medeniyet emojisi",
+        placeholder="@Oyuncu3 <:japan:789>\n@Oyuncu4 <:china:012>",
+        style=discord.TextStyle.paragraph,
+        max_length=700,
+    )
+
+    def __init__(self, match_id: str):
+        super().__init__()
+        self.match_id = match_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        w_lines = [l.strip() for l in self.winners.value.strip().splitlines() if l.strip()]
+        l_lines = [l.strip() for l in self.losers.value.strip().splitlines() if l.strip()]
+
+        w_players, l_players = [], []
+        for line in w_lines:
+            pid, name, civ = _parse_line(interaction.guild, line)
+            if pid:
+                w_players.append((pid, name))
+                if civ:
+                    db.record_civ_play(pid, name, civ, "team")
+        for line in l_lines:
+            pid, name, civ = _parse_line(interaction.guild, line)
+            if pid:
+                l_players.append((pid, name))
+                if civ:
+                    db.record_civ_play(pid, name, civ, "team")
+
+        w_results, l_results = (
+            db.record_team(w_players, l_players)
+            if w_players and l_players
+            else ([], [])
+        )
+        elo_by_id = {r.player_id: r for r in w_results + l_results}
+
+        def fmt_lines(raw_lines: list[str]) -> str:
+            out = []
+            for line in raw_lines:
+                pid, _, _ = _parse_line(interaction.guild, line)
+                suffix = ""
+                if pid and pid in elo_by_id:
+                    r    = elo_by_id[pid]
+                    sign = "+" if r.delta >= 0 else ""
+                    suffix = f"  `{r.old_rating} → {r.new_rating} ({sign}{r.delta})`"
+                out.append(f"{line}{suffix}")
+            return "\n".join(out) or "—"
+
+        embed = discord.Embed(title="🤝 Teamer Maç Sonucu", color=discord.Color.green())
+        embed.add_field(name="🏆 Kazanan Takım", value=fmt_lines(w_lines), inline=False)
+        embed.add_field(name="💀 Kaybeden Takım", value=fmt_lines(l_lines), inline=False)
+        embed.set_footer(text=f"Maç ID: {self.match_id}")
+        await interaction.response.send_message(embed=embed)
+
+
 class IdTypeView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=60)
@@ -1230,6 +1346,21 @@ async def id_command(interaction: discord.Interaction):
     await interaction.response.send_message(
         "Ne yapmak istiyorsun?", view=IdTypeView(), ephemeral=True
     )
+
+
+@bot.tree.command(name="report", description="Maç ID'si ile sonuç raporla — FFA veya takım otomatik algılanır")
+@app_commands.describe(match_id="Maç ID'si (örnek: FFA-A3K7X2 veya TEAM-B5K8X1)")
+async def report_command(interaction: discord.Interaction, match_id: str):
+    mid = match_id.upper().strip()
+    if mid.startswith("FFA-"):
+        await interaction.response.send_modal(FfaReportModal(mid))
+    elif mid.startswith("TEAM-"):
+        await interaction.response.send_modal(TeamerReportModal(mid))
+    else:
+        await interaction.response.send_message(
+            "❌ Geçersiz maç ID'si! `FFA-XXXXXX` veya `TEAM-XXXXXX` formatında olmalı.",
+            ephemeral=True,
+        )
 
 
 @bot.tree.command(name="autodraftffa", description="Oyuncu sayısı seç, lider ban et → havuzlar otomatik dağıtılır (ses kanalı gerekmez)")
@@ -1415,7 +1546,12 @@ async def help_command(interaction: discord.Interaction):
     )
     embed.add_field(
         name="/id",
-        value="FFA veya teamer maç sonucu gir (ELO kaydedilir) · Kendi istatistiklerine bak.",
+        value="Yeni maç sonucu gir (otomatik ID üretilir, ELO kaydedilir) · Kendi istatistiklerine bak.",
+        inline=False,
+    )
+    embed.add_field(
+        name="/report <maç_id>",
+        value="Draft'ta üretilen ID ile sonucu raporla. `FFA-XXXXXX` → FFA sıralaması, `TEAM-XXXXXX` → takım sonucu. Her satıra `@oyuncu <medeniyet_emojisi>` yaz.",
         inline=False,
     )
     embed.add_field(
