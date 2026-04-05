@@ -1,7 +1,5 @@
 import discord
-from discord import app_commands
 from discord.ext import commands
-import asyncio
 import random
 from collections import Counter
 import os
@@ -129,6 +127,25 @@ async def send_embeds(
         await channel.send(embeds=rest[i : i + 10])
 
 
+def _distribute_leaders(
+    members: list[discord.Member],
+    banned_civs: set[str] = frozenset(),
+    banned_pairs: set[tuple[str, str]] | None = None,
+) -> dict[discord.Member, list[tuple[str, str]]]:
+    """Shuffle remaining leaders and deal them as evenly as possible."""
+    if banned_pairs is not None:
+        remaining = [p for p in ALL_LEADERS if p not in banned_pairs]
+    else:
+        remaining = [(c, l) for c, l in ALL_LEADERS if c not in banned_civs]
+    random.shuffle(remaining)
+    n = len(members)
+    per_player = len(remaining) // n
+    pools = {m: remaining[i * per_player : (i + 1) * per_player] for i, m in enumerate(members)}
+    for i, pair in enumerate(remaining[n * per_player :]):
+        pools[members[i]].append(pair)
+    return pools
+
+
 # ===========================================================================
 # FFA GAME — new flow: map vote → per-player civ ban → pool distribution
 # ===========================================================================
@@ -168,17 +185,7 @@ class FFAGame:
     # ---- pool distribution ----
 
     def distribute_pools(self) -> dict[discord.Member, list[tuple[str, str]]]:
-        banned_civs = self.get_banned_civs()
-        remaining = [(c, l) for c, l in ALL_LEADERS if c not in banned_civs]
-        random.shuffle(remaining)
-        n = len(self.players)
-        per_player = len(remaining) // n
-        pools: dict[discord.Member, list] = {}
-        for i, member in enumerate(self.players):
-            pools[member] = remaining[i * per_player : (i + 1) * per_player]
-        for i, pair in enumerate(remaining[n * per_player :]):
-            pools[self.players[i]].append(pair)
-        return pools
+        return _distribute_leaders(self.players, banned_civs=self.get_banned_civs())
 
 
 # ---------------------------------------------------------------------------
@@ -391,22 +398,14 @@ class TeamDraftSession:
         )
 
     async def finalize(self, interaction: discord.Interaction):
-        remaining = [p for p in ALL_LEADERS if p not in self.banned]
-        random.shuffle(remaining)
+        player_pools = _distribute_leaders(self.members, banned_pairs=self.banned)
+
         shuffled_members = self.members[:]
         random.shuffle(shuffled_members)
 
         teams: list[list[discord.Member]] = [[] for _ in range(self.team_count)]
         for i, m in enumerate(shuffled_members):
             teams[i % self.team_count].append(m)
-
-        n = len(self.members)
-        per_player = len(remaining) // n
-        player_pools: dict[discord.Member, list] = {}
-        for i, m in enumerate(self.members):
-            player_pools[m] = remaining[i * per_player : (i + 1) * per_player]
-        for i, pair in enumerate(remaining[n * per_player :]):
-            player_pools[self.members[i]].append(pair)
 
         mentions = " ".join(m.mention for m in self.members)
         header = discord.Embed(

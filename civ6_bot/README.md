@@ -18,24 +18,32 @@ Bot tokenini almak için:
 2. Bot sekmesi → Token kopyala → `.env` dosyasına yapıştır
 3. Bot sayfasında şu **Privileged Gateway Intents**'leri aç:
    - **Server Members Intent**
-   - **Message Content Intent**
 
 ## Komutlar
 
 | Komut | Açıklama |
 |-------|----------|
-| `/civ` | FFA veya Takımlı seçim menüsü açar |
-| `/ffa` | Ses kanaldaki herkesi etiketler, FFA listesi oluşturur |
+| `/ffa` | Harita oylaması → Civ ban → Lider havuzu dağıtımı |
 | `/takim` | Kaç takım istediğini sorar, oyuncuları rastgele dağıtır |
 | `/yardim` | Komut listesini gösterir |
 
 ## Nasıl Çalışır?
 
 ### FFA
-- `/ffa` veya `/civ → FFA` butonuna bas
-- Bot, o an bulunduğun ses kanaldaki tüm üyeleri **etiketler** ve listeler
+- `/ffa` komutunu yaz
+- **Harita seçimi**: 7 harita butonu çıkar, herkes oy verir, embed canlı güncellenir
+- **Civ ban**: Tek mesajda herkes banlamak istediği medeniyetin emojisini koyar, Onayla'ya basar
+- **Havuz dağıtımı**: Kalan liderler oyunculara eşit paylaştırılır
 
 ### Takımlı
-- `/takim` veya `/civ → Takımlı` butonuna bas
+- `/takim` komutunu yaz
 - Bot kaç takım istediğini sorar (2–6 takım, oyuncu sayısına göre)
-- Oyuncular seçilen takım sayısına rastgele ve dengeli dağıtılır
+- Lider ban aşamasından sonra oyuncular takımlara rastgele dağıtılır
+
+## Medeniyet Emojileri (FFA Ban için)
+
+`civ_emojis.py` dosyasında her medeniyete Discord emoji karşılığını ekle:
+
+```python
+"America": "<:civ_america:123456789>",
+```
