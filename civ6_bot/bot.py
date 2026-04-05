@@ -1040,15 +1040,28 @@ def _parse_mention_id(text: str) -> str | None:
     return m.group(1) if m else None
 
 
-def _resolve_name(guild: discord.Guild, line: str) -> tuple[str | None, str]:
-    """Return (player_id, display_name) from a result line. id=None if no mention found."""
+def _parse_line(guild: discord.Guild, line: str) -> tuple[str | None, str, str | None]:
+    """Parse a result line into (player_id, display_name, civ_name).
+    Expected format: '@Mention CivName'  or  'Name CivName'
+    player_id is None if no Discord mention found.
+    civ_name is None if nothing follows the name.
+    """
     pid = _parse_mention_id(line)
     if pid:
         member = guild.get_member(int(pid))
         name = member.display_name if member else f"<@{pid}>"
+        civ  = re.sub(r"<@!?\d+>", "", line).strip() or None
     else:
-        pid = None
-        name = line.split()[0] if line.split() else line  # first word as fallback name
+        parts = line.split(None, 1)
+        name  = parts[0] if parts else line
+        civ   = parts[1].strip() if len(parts) > 1 else None
+        pid   = None
+    return pid, name, civ
+
+
+# keep old name as alias so existing callers still work
+def _resolve_name(guild: discord.Guild, line: str) -> tuple[str | None, str]:
+    pid, name, _ = _parse_line(guild, line)
     return pid, name
 
 
@@ -1064,22 +1077,24 @@ class FfaResultModal(discord.ui.Modal, title="FFA Maç Sonucu"):
         match_id = _make_match_id("FFA")
         lines = [l.strip() for l in self.results.value.strip().splitlines() if l.strip()]
 
-        # Build ordered player list for ELO calculation
-        ordered: list[tuple[str, str]] = []   # (player_id, display_name)
+        # Build ordered player list for ELO calculation + civ tracking
+        ordered: list[tuple[str, str]] = []
         for line in lines:
-            pid, name = _resolve_name(interaction.guild, line)
+            pid, name, civ = _parse_line(interaction.guild, line)
             if pid:
                 ordered.append((pid, name))
+                if civ:
+                    db.record_civ_play(pid, name, civ, "ffa")
 
         elo_results = db.record_ffa(ordered) if ordered else []
         elo_by_id   = {r.player_id: r for r in elo_results}
 
         ranking_parts = []
         for i, line in enumerate(lines):
-            pid, _ = _resolve_name(interaction.guild, line)
+            pid, _, _ = _parse_line(interaction.guild, line)
             suffix = ""
             if pid and pid in elo_by_id:
-                r = elo_by_id[pid]
+                r     = elo_by_id[pid]
                 sign  = "+" if r.delta >= 0 else ""
                 suffix = f"  `{r.old_rating} → {r.new_rating} ({sign}{r.delta})`"
             ranking_parts.append(f"**{i + 1}.** {line}{suffix}")
@@ -1112,10 +1127,20 @@ class TeamerResultModal(discord.ui.Modal, title="Teamer Maç Sonucu"):
         w_lines = [l.strip() for l in self.winners.value.strip().splitlines() if l.strip()]
         l_lines = [l.strip() for l in self.losers.value.strip().splitlines() if l.strip()]
 
-        w_players = [(pid, name) for line in w_lines
-                     for pid, name in [_resolve_name(interaction.guild, line)] if pid]
-        l_players = [(pid, name) for line in l_lines
-                     for pid, name in [_resolve_name(interaction.guild, line)] if pid]
+        w_players = []
+        for line in w_lines:
+            pid, name, civ = _parse_line(interaction.guild, line)
+            if pid:
+                w_players.append((pid, name))
+                if civ:
+                    db.record_civ_play(pid, name, civ, "team")
+        l_players = []
+        for line in l_lines:
+            pid, name, civ = _parse_line(interaction.guild, line)
+            if pid:
+                l_players.append((pid, name))
+                if civ:
+                    db.record_civ_play(pid, name, civ, "team")
 
         w_results, l_results = (
             db.record_team(w_players, l_players)
@@ -1168,13 +1193,20 @@ class IdTypeView(discord.ui.View):
             color=discord.Color.blurple(),
         )
 
+        ffa_civs  = db.player_most_played(uid, "ffa",  limit=3)
+        team_civs = db.player_most_played(uid, "team", limit=3)
+
+        def civ_line(rows) -> str:
+            return ", ".join(f"{r['civ']} ({r['plays']}x)" for r in rows) or "—"
+
         if ffa:
             win_pct = round(100 * ffa["wins"] / ffa["games"], 1) if ffa["games"] else 0
             embed.add_field(
                 name="⚔️ FFA",
                 value=(
                     f"ELO: **{ffa['rating']}**\n"
-                    f"Maç: {ffa['games']}  ·  1. bitiş: {ffa['wins']}  ·  %{win_pct}"
+                    f"Maç: {ffa['games']}  ·  1. bitiş: {ffa['wins']}  ·  %{win_pct}\n"
+                    f"En çok: {civ_line(ffa_civs)}"
                 ),
                 inline=True,
             )
@@ -1187,7 +1219,8 @@ class IdTypeView(discord.ui.View):
                 name="🤝 Teamer",
                 value=(
                     f"ELO: **{team['rating']}**\n"
-                    f"G/M: {team['wins']}/{team['losses']}  ·  %{win_pct} kazanma"
+                    f"G/M: {team['wins']}/{team['losses']}  ·  %{win_pct} kazanma\n"
+                    f"En çok: {civ_line(team_civs)}"
                 ),
                 inline=True,
             )
@@ -1212,6 +1245,50 @@ async def autodraftffa_command(interaction: discord.Interaction):
 @bot.tree.command(name="autodraftteam", description="Pick team count, ban leaders → pools distributed to teams automatically")
 async def autodraftteam_command(interaction: discord.Interaction):
     await interaction.response.send_message("Kaç takım olsun?", view=AutoDraftCountView())
+
+
+class MostPlayedTypeView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    @discord.ui.button(label="⚔️ FFA", style=discord.ButtonStyle.primary)
+    async def ffa_btn(self, interaction: discord.Interaction, _btn):
+        await self._show(interaction, "ffa")
+
+    @discord.ui.button(label="🤝 Teamer", style=discord.ButtonStyle.success)
+    async def team_btn(self, interaction: discord.Interaction, _btn):
+        await self._show(interaction, "team")
+
+    async def _show(self, interaction: discord.Interaction, game_type: str):
+        rows = db.most_played_civs(game_type)
+        if not rows:
+            await interaction.response.edit_message(
+                content="Henüz kayıt yok.", view=None
+            )
+            return
+
+        medals = ["🥇", "🥈", "🥉"]
+        lines = []
+        for i, row in enumerate(rows):
+            prefix = medals[i] if i < 3 else f"**{i + 1}.**"
+            lines.append(
+                f"{prefix} {row['civ']} — "
+                f"**{row['plays']}** kez  ·  {row['unique_players']} farklı oyuncu"
+            )
+
+        title = "⚔️ FFA" if game_type == "ffa" else "🤝 Teamer"
+        color = discord.Color.gold() if game_type == "ffa" else discord.Color.green()
+        embed = discord.Embed(
+            title=f"{title} — En Çok Oynanan Medeniyetler",
+            description="\n".join(lines),
+            color=color,
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
+@bot.tree.command(name="mostplayed", description="Most played civilizations across all FFA or team matches")
+async def mostplayed_command(interaction: discord.Interaction):
+    await interaction.response.send_message("Hangi mod?", view=MostPlayedTypeView())
 
 
 @bot.tree.command(name="help", description="List all Civ6 bot commands.")

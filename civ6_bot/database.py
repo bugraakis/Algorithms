@@ -62,6 +62,16 @@ def init_db() -> None:
                 wins        INTEGER DEFAULT 0,
                 losses      INTEGER DEFAULT 0
             );
+
+            CREATE TABLE IF NOT EXISTS civ_plays (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_id   TEXT    NOT NULL,
+                player_tag  TEXT    NOT NULL,
+                civ         TEXT    NOT NULL,
+                game_type   TEXT    NOT NULL   -- 'ffa' | 'team'
+            );
+            CREATE INDEX IF NOT EXISTS idx_civ_game  ON civ_plays(civ, game_type);
+            CREATE INDEX IF NOT EXISTS idx_civ_player ON civ_plays(player_id, game_type);
         """)
 
 
@@ -216,3 +226,39 @@ def team_player(player_id: str) -> sqlite3.Row | None:
         return c.execute(
             "SELECT * FROM team_scores WHERE player_id = ?", (player_id,)
         ).fetchone()
+
+
+# ── Civ plays ─────────────────────────────────────────────────────────────────
+
+def record_civ_play(player_id: str, player_tag: str, civ: str, game_type: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO civ_plays (player_id, player_tag, civ, game_type) VALUES (?, ?, ?, ?)",
+            (player_id, player_tag, civ, game_type),
+        )
+
+
+def most_played_civs(game_type: str, limit: int = 15) -> list[sqlite3.Row]:
+    with _conn() as c:
+        return c.execute("""
+            SELECT civ,
+                   COUNT(*)                    AS plays,
+                   COUNT(DISTINCT player_id)   AS unique_players
+            FROM civ_plays
+            WHERE game_type = ?
+            GROUP BY civ
+            ORDER BY plays DESC
+            LIMIT ?
+        """, (game_type, limit)).fetchall()
+
+
+def player_most_played(player_id: str, game_type: str, limit: int = 3) -> list[sqlite3.Row]:
+    with _conn() as c:
+        return c.execute("""
+            SELECT civ, COUNT(*) AS plays
+            FROM civ_plays
+            WHERE player_id = ? AND game_type = ?
+            GROUP BY civ
+            ORDER BY plays DESC
+            LIMIT ?
+        """, (player_id, game_type, limit)).fetchall()
