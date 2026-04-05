@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 from leaders import CIVS, LEADERS_BY_CIV, image_url
 from civ_emojis import CIV_EMOJIS
+from leader_emojis import LEADER_EMOJI_NAMES
 import database as db
 
 load_dotenv()
@@ -108,10 +109,20 @@ def civ_emoji_str(civ: str) -> str:
     return CIV_EMOJIS.get(civ) or ""
 
 
+def leader_emoji_str(leader: str, guild: discord.Guild | None = None) -> str:
+    """Return the Discord emoji string for a leader, resolved live from the guild."""
+    name = LEADER_EMOJI_NAMES.get(leader)
+    if not name or not guild:
+        return ""
+    emoji = discord.utils.get(guild.emojis, name=name)
+    return str(emoji) if emoji else ""
+
+
 def build_pool_embed(
     member: discord.Member,
     pool: list[tuple[str, str]],
     color: discord.Color,
+    guild: discord.Guild | None = None,
 ) -> discord.Embed:
     embed = discord.Embed(
         title=f"🎴 {member.display_name}",
@@ -119,7 +130,9 @@ def build_pool_embed(
         color=color,
     )
     for civ, leader in pool:
-        embed.add_field(name=leader, value=civ, inline=True)
+        emoji = leader_emoji_str(leader, guild)
+        label = f"{emoji} {leader}".strip() if emoji else leader
+        embed.add_field(name=label, value=civ, inline=True)
     if pool:
         embed.set_thumbnail(url=image_url(*pool[0]))
     return embed
@@ -372,7 +385,7 @@ async def _finalize_ffa_pools(
     await channel.send(content=mentions, embed=header)
 
     for i, player in enumerate(game.players):
-        embed = build_pool_embed(player, pools[player], PLAYER_COLORS[i % len(PLAYER_COLORS)])
+        embed = build_pool_embed(player, pools[player], PLAYER_COLORS[i % len(PLAYER_COLORS)], channel.guild)
         await channel.send(content=player.mention, embed=embed)
 
     # Delete the ban phase message to keep the channel clean
@@ -386,21 +399,24 @@ async def _finalize_ffa_pools(
 
 
 class LeaderBanView(discord.ui.View):
-    def __init__(self, session, civ: str, ban_view: "TeamBanPhaseView"):
+    def __init__(self, session, civ: str, ban_view: "TeamBanPhaseView", guild: discord.Guild | None = None):
         super().__init__(timeout=120)
         self.session = session
         self.civ = civ
         self.ban_view = ban_view
 
-        options = [
-            discord.SelectOption(
+        def _opt(l: str) -> discord.SelectOption:
+            emoji_name = LEADER_EMOJI_NAMES.get(l)
+            guild_emoji = discord.utils.get(guild.emojis, name=emoji_name) if guild and emoji_name else None
+            return discord.SelectOption(
                 label=l,
                 value=l,
+                emoji=guild_emoji,
                 description="BANLI" if (civ, l) in session.banned else "",
                 default=(civ, l) in session.banned,
             )
-            for l in LEADERS_BY_CIV[civ]
-        ]
+
+        options = [_opt(l) for l in LEADERS_BY_CIV[civ]]
         sel = discord.ui.Select(
             placeholder=f"{civ} — ban etmek istediklerini seç",
             options=options,
@@ -476,7 +492,7 @@ class TeamBanPhaseView(discord.ui.View):
         civ = interaction.data["values"][0]
         await interaction.response.edit_message(
             content=f"**{civ}** liderlerinden ban etmek istediklerini seç:",
-            view=LeaderBanView(self.session, civ, self),
+            view=LeaderBanView(self.session, civ, self, interaction.guild),
         )
 
     async def _start(self, interaction: discord.Interaction):
@@ -843,6 +859,7 @@ class AutoDraftFfaSession:
         for i, pair in enumerate(remaining[n * per_player :]):
             pools[i].append(pair)
 
+        guild = interaction.guild
         embeds = []
         for i, pool in enumerate(pools):
             embed = discord.Embed(
@@ -851,7 +868,9 @@ class AutoDraftFfaSession:
                 color=PLAYER_COLORS[i % len(PLAYER_COLORS)],
             )
             for civ, leader in pool:
-                embed.add_field(name=leader, value=civ, inline=True)
+                emoji = leader_emoji_str(leader, guild)
+                label = f"{emoji} {leader}".strip() if emoji else leader
+                embed.add_field(name=label, value=civ, inline=True)
             embeds.append(embed)
 
         first, rest = embeds[:10], embeds[10:]
@@ -924,9 +943,12 @@ class AutoDraftSession:
             )
             for i, leaders in enumerate(teams)
         ]
+        guild = interaction.guild
         for i, leaders in enumerate(teams):
             for civ, leader in leaders:
-                embeds[i].add_field(name=leader, value=civ, inline=True)
+                emoji = leader_emoji_str(leader, guild)
+                label = f"{emoji} {leader}".strip() if emoji else leader
+                embeds[i].add_field(name=label, value=civ, inline=True)
 
         first, rest = embeds[:10], embeds[10:]
         await interaction.response.edit_message(content=None, embeds=first, view=None)
