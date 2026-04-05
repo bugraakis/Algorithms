@@ -1,3 +1,5 @@
+import asyncio
+import sys
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -7,6 +9,10 @@ import re
 from collections import Counter
 import os
 from dotenv import load_dotenv
+
+# Windows WinError 121 fix
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from leaders import CIVS, LEADERS_BY_CIV, image_url
 from civ_emojis import CIV_EMOJIS
