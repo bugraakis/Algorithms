@@ -875,6 +875,79 @@ class TeamCivActionView(discord.ui.View):
 
 
 # ===========================================================================
+# /autodraftteam — takım sayısı seç + ban → liderler takımlara otomatik düşer
+# ===========================================================================
+
+class AutoDraftSession:
+    """TeamBanPhaseView ile uyumlu duck-type session: sadece ban + dağıtım."""
+
+    def __init__(self, team_count: int):
+        self.team_count = team_count
+        self.banned: set[tuple[str, str]] = set()
+
+    def ban_status(self) -> str:
+        banned_text = (
+            ", ".join(f"{c} — {l}" for c, l in sorted(self.banned))
+            if self.banned
+            else "Henüz ban yok"
+        )
+        return (
+            f"🚫 **Ban Aşaması** — {self.team_count} Takım\n"
+            f"Toplam lider: **{len(ALL_LEADERS)}**  |  "
+            f"Banlanan: **{len(self.banned)}**  |  "
+            f"Kalan: **{len(ALL_LEADERS) - len(self.banned)}**\n"
+            f"Banlananlar: {banned_text}"
+        )
+
+    async def finalize(self, interaction: discord.Interaction):
+        remaining = [p for p in ALL_LEADERS if p not in self.banned]
+        random.shuffle(remaining)
+        n = self.team_count
+        per_team = len(remaining) // n
+        teams = [remaining[i * per_team : (i + 1) * per_team] for i in range(n)]
+        for i, pair in enumerate(remaining[n * per_team :]):
+            teams[i].append(pair)
+
+        embeds = [
+            discord.Embed(
+                title=f"{TEAM_EMOJIS[i % len(TEAM_EMOJIS)]} Takım {i + 1}",
+                description=f"{len(leaders)} lider",
+                color=TEAM_COLORS[i % len(TEAM_COLORS)],
+            )
+            for i, leaders in enumerate(teams)
+        ]
+        for i, leaders in enumerate(teams):
+            for civ, leader in leaders:
+                embeds[i].add_field(name=leader, value=civ, inline=True)
+
+        first, rest = embeds[:10], embeds[10:]
+        await interaction.response.edit_message(content=None, embeds=first, view=None)
+        for chunk in [rest[j : j + 10] for j in range(0, len(rest), 10)]:
+            await interaction.followup.send(embeds=chunk)
+
+
+class AutoDraftCountView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+        for n in range(2, 7):
+            btn = discord.ui.Button(
+                label=f"{TEAM_EMOJIS[n - 2]} {n} Takım",
+                style=discord.ButtonStyle.primary,
+            )
+            btn.callback = self._make_cb(n)
+            self.add_item(btn)
+
+    def _make_cb(self, n: int):
+        async def cb(interaction: discord.Interaction):
+            self.stop()
+            session = AutoDraftSession(n)
+            await interaction.response.edit_message(
+                content=session.ban_status(), view=TeamBanPhaseView(session)
+            )
+        return cb
+
+
+# ===========================================================================
 # Slash Commands
 # ===========================================================================
 
@@ -967,6 +1040,11 @@ async def teams_command(interaction: discord.Interaction):
         content=f"Kaç takım olsun? ({len(members)} oyuncu)",
         view=TeamCountView(members),
     )
+
+
+@bot.tree.command(name="autodraftteam", description="Takım sayısı seç, lider ban yap → takımlara otomatik dağıtılır")
+async def autodraftteam_command(interaction: discord.Interaction):
+    await interaction.response.send_message("Kaç takım olsun?", view=AutoDraftCountView())
 
 
 @bot.tree.command(name="yardim", description="Civ6 bot komutlarını listeler.")
