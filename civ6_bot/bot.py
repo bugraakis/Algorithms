@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 import os
 import random
@@ -8,7 +9,6 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
-intents.message_content = True
 intents.members = True
 intents.voice_states = True
 
@@ -19,11 +19,12 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # Helpers
 # ---------------------------------------------------------------------------
 
-def get_voice_members(ctx: commands.Context) -> list[discord.Member]:
-    """Return members in the author's current voice channel (excluding bots)."""
-    if ctx.author.voice is None or ctx.author.voice.channel is None:
+def get_voice_members(interaction: discord.Interaction) -> list[discord.Member]:
+    """Return members in the invoker's current voice channel (excluding bots)."""
+    member = interaction.guild.get_member(interaction.user.id)
+    if member is None or member.voice is None or member.voice.channel is None:
         return []
-    return [m for m in ctx.author.voice.channel.members if not m.bot]
+    return [m for m in member.voice.channel.members if not m.bot]
 
 
 def build_ffa_embed(members: list[discord.Member], channel_name: str) -> discord.Embed:
@@ -91,29 +92,29 @@ class TeamCountView(discord.ui.View):
 # ---------------------------------------------------------------------------
 
 class GameModeView(discord.ui.View):
-    def __init__(self, ctx: commands.Context):
+    def __init__(self, origin: discord.Interaction):
         super().__init__(timeout=60)
-        self.ctx = ctx
+        self.origin = origin
 
     @discord.ui.button(label="⚔️ FFA", style=discord.ButtonStyle.danger)
     async def ffa_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.stop()
-        members = get_voice_members(self.ctx)
+        members = get_voice_members(self.origin)
         if not members:
             await interaction.response.edit_message(
                 content="❌ Bir ses kanalında olman gerekiyor!", embed=None, view=None
             )
             return
-        channel_name = self.ctx.author.voice.channel.name
+        member = interaction.guild.get_member(self.origin.user.id)
+        channel_name = member.voice.channel.name
         embed = build_ffa_embed(members, channel_name)
-        # Mention everyone so they get a ping
         mentions = " ".join(m.mention for m in members)
         await interaction.response.edit_message(content=mentions, embed=embed, view=None)
 
     @discord.ui.button(label="🤝 Takımlı", style=discord.ButtonStyle.success)
     async def teams_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.stop()
-        members = get_voice_members(self.ctx)
+        members = get_voice_members(self.origin)
         if not members:
             await interaction.response.edit_message(
                 content="❌ Bir ses kanalında olman gerekiyor!", embed=None, view=None
@@ -136,70 +137,68 @@ class GameModeView(discord.ui.View):
 
 
 # ---------------------------------------------------------------------------
-# Commands
+# Slash Commands
 # ---------------------------------------------------------------------------
 
-@bot.command(name="civ", aliases=["civstart", "oyun"])
-async def civ_command(ctx: commands.Context):
-    """Civ 6 oyun kurulumunu başlatır: FFA veya Takımlı seçimi."""
+@bot.tree.command(name="civ", description="Civ 6 oyun kurulumunu başlatır: FFA veya Takımlı seçimi.")
+async def civ_command(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🎮 Civilization VI",
         description="Oyun modunu seçin:",
         color=discord.Color.blurple(),
     )
-    view = GameModeView(ctx)
-    await ctx.send(embed=embed, view=view)
+    view = GameModeView(interaction)
+    await interaction.response.send_message(embed=embed, view=view)
 
 
-@bot.command(name="ffa")
-async def ffa_command(ctx: commands.Context):
-    """Direkt FFA modunu başlatır."""
-    members = get_voice_members(ctx)
+@bot.tree.command(name="ffa", description="Ses kanaldaki herkesi etiketler, FFA oyuncu listesi oluşturur.")
+async def ffa_command(interaction: discord.Interaction):
+    members = get_voice_members(interaction)
     if not members:
-        await ctx.send("❌ Bir ses kanalında olman gerekiyor!")
+        await interaction.response.send_message("❌ Bir ses kanalında olman gerekiyor!", ephemeral=True)
         return
-    channel_name = ctx.author.voice.channel.name
+    member = interaction.guild.get_member(interaction.user.id)
+    channel_name = member.voice.channel.name
     embed = build_ffa_embed(members, channel_name)
     mentions = " ".join(m.mention for m in members)
-    await ctx.send(content=mentions, embed=embed)
+    await interaction.response.send_message(content=mentions, embed=embed)
 
 
-@bot.command(name="takim", aliases=["team", "takım"])
-async def teams_command(ctx: commands.Context):
-    """Direkt takımlı modu başlatır, kaç takım sorar."""
-    members = get_voice_members(ctx)
+@bot.tree.command(name="takim", description="Kaç takım istediğini sorar, oyuncuları rastgele takımlara dağıtır.")
+async def teams_command(interaction: discord.Interaction):
+    members = get_voice_members(interaction)
     if not members:
-        await ctx.send("❌ Bir ses kanalında olman gerekiyor!")
+        await interaction.response.send_message("❌ Bir ses kanalında olman gerekiyor!", ephemeral=True)
         return
     if len(members) < 2:
-        await ctx.send("❌ Takımlı oyun için en az 2 kişi gerekli!")
+        await interaction.response.send_message("❌ Takımlı oyun için en az 2 kişi gerekli!", ephemeral=True)
         return
     view = TeamCountView(members)
-    await ctx.send(f"Kaç takım olsun? ({len(members)} oyuncu)", view=view)
+    await interaction.response.send_message(f"Kaç takım olsun? ({len(members)} oyuncu)", view=view)
 
 
-@bot.command(name="yardim", aliases=["help_civ"])
-async def help_command(ctx: commands.Context):
+@bot.tree.command(name="yardim", description="Civ6 bot komutlarını listeler.")
+async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
         title="📖 Civ6 Bot Komutları",
         color=discord.Color.blurple(),
     )
     embed.add_field(
-        name="!civ",
+        name="/civ",
         value="Oyun modu seçimi (FFA veya Takımlı) — ses kanalında olman gerekir.",
         inline=False,
     )
     embed.add_field(
-        name="!ffa",
+        name="/ffa",
         value="Direkt FFA: ses kanaldaki tüm oyuncuları listeler ve etiketler.",
         inline=False,
     )
     embed.add_field(
-        name="!takim",
+        name="/takim",
         value="Direkt Takımlı: kaç takım istediğini seç, oyuncular rastgele dağıtılır.",
         inline=False,
     )
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # ---------------------------------------------------------------------------
@@ -208,15 +207,10 @@ async def help_command(ctx: commands.Context):
 
 @bot.event
 async def on_ready():
+    await bot.tree.sync()
     print(f"✅ {bot.user} olarak giriş yapıldı.")
-    await bot.change_presence(activity=discord.Game(name="Civilization VI | !civ"))
-
-
-@bot.event
-async def on_command_error(ctx: commands.Context, error):
-    if isinstance(error, commands.CommandNotFound):
-        return
-    raise error
+    print(f"✅ Slash komutları senkronize edildi.")
+    await bot.change_presence(activity=discord.Game(name="Civilization VI | /civ"))
 
 
 # ---------------------------------------------------------------------------

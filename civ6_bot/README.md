@@ -24,18 +24,18 @@ Bot tokenini almak için:
 
 | Komut | Açıklama |
 |-------|----------|
-| `!civ` | FFA veya Takımlı seçim menüsü açar |
-| `!ffa` | Ses kanaldaki herkesi etiketler, FFA listesi oluşturur |
-| `!takim` | Kaç takım istediğini sorar, oyuncuları rastgele dağıtır |
-| `!yardim` | Komut listesini gösterir |
+| `/civ` | FFA veya Takımlı seçim menüsü açar |
+| `/ffa` | Ses kanaldaki herkesi etiketler, FFA listesi oluşturur |
+| `/takim` | Kaç takım istediğini sorar, oyuncuları rastgele dağıtır |
+| `/yardim` | Komut listesini gösterir |
 
 ## Nasıl Çalışır?
 
 ### FFA
-- `!ffa` veya `!civ → FFA` butonuna bas
+- `/ffa` veya `/civ → FFA` butonuna bas
 - Bot, o an bulunduğun ses kanaldaki tüm üyeleri **etiketler** ve listeler
 
 ### Takımlı
-- `!takim` veya `!civ → Takımlı` butonuna bas
+- `/takim` veya `/civ → Takımlı` butonuna bas
 - Bot kaç takım istediğini sorar (2–6 takım, oyuncu sayısına göre)
 - Oyuncular seçilen takım sayısına rastgele ve dengeli dağıtılır
