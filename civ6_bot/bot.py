@@ -959,8 +959,8 @@ class AutoDraftCountView(discord.ui.View):
 # Slash Commands
 # ===========================================================================
 
-@bot.tree.command(name="team", description="2-team draft: map ban → civ ban → civ pick")
-@app_commands.describe(opponent="Karşı takım temsilcisini etiketle")
+@bot.tree.command(name="team", description="Ses kanalıyla 2 takımlı sıralı draft: harita ban → civ ban → civ seçim")
+@app_commands.describe(opponent="Rakip takımın temsilcisini etiketle")
 async def team_command(interaction: discord.Interaction, opponent: discord.Member):
     if interaction.channel_id in active_team_games:
         await interaction.response.send_message("Bu kanalda zaten aktif bir takım oyunu var!", ephemeral=True)
@@ -1002,7 +1002,7 @@ async def team_command(interaction: discord.Interaction, opponent: discord.Membe
     await interaction.response.send_message(embed=embed, view=TeamSelectionView(game))
 
 
-@bot.tree.command(name="ffa", description="FFA: Map vote → Civ ban → Leader pool distribution")
+@bot.tree.command(name="ffa", description="Ses kanalıyla FFA: harita oyu → civ ban (emoji) → lider havuzu dağıtımı")
 async def ffa_command(interaction: discord.Interaction):
     if interaction.channel_id in active_ffa_games:
         await interaction.response.send_message(
@@ -1058,11 +1058,6 @@ def _parse_line(guild: discord.Guild, line: str) -> tuple[str | None, str, str |
         pid   = None
     return pid, name, civ
 
-
-# keep old name as alias so existing callers still work
-def _resolve_name(guild: discord.Guild, line: str) -> tuple[str | None, str]:
-    pid, name, _ = _parse_line(guild, line)
-    return pid, name
 
 
 class FfaResultModal(discord.ui.Modal, title="FFA Maç Sonucu"):
@@ -1152,7 +1147,7 @@ class TeamerResultModal(discord.ui.Modal, title="Teamer Maç Sonucu"):
         def fmt_lines(raw_lines: list[str]) -> str:
             out = []
             for line in raw_lines:
-                pid, _ = _resolve_name(interaction.guild, line)
+                pid, _, _ = _parse_line(interaction.guild, line)
                 suffix = ""
                 if pid and pid in elo_by_id:
                     r    = elo_by_id[pid]
@@ -1230,19 +1225,19 @@ class IdTypeView(discord.ui.View):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="id", description="Submit match result or view your stats")
+@bot.tree.command(name="id", description="Maç sonucu gir ve ELO kaydet, veya kendi istatistiklerine bak")
 async def id_command(interaction: discord.Interaction):
     await interaction.response.send_message(
         "Ne yapmak istiyorsun?", view=IdTypeView(), ephemeral=True
     )
 
 
-@bot.tree.command(name="autodraftffa", description="Pick player count, ban leaders → pools distributed automatically")
+@bot.tree.command(name="autodraftffa", description="Oyuncu sayısı seç, lider ban et → havuzlar otomatik dağıtılır (ses kanalı gerekmez)")
 async def autodraftffa_command(interaction: discord.Interaction):
     await interaction.response.send_message("Kaç oyuncu?", view=AutoDraftFfaCountView())
 
 
-@bot.tree.command(name="autodraftteam", description="Pick team count, ban leaders → pools distributed to teams automatically")
+@bot.tree.command(name="autodraftteam", description="Takım sayısı seç, lider ban et → her takıma otomatik dağıtılır (ses kanalı gerekmez)")
 async def autodraftteam_command(interaction: discord.Interaction):
     await interaction.response.send_message("Kaç takım olsun?", view=AutoDraftCountView())
 
@@ -1345,7 +1340,7 @@ class LeaderboardView(discord.ui.View):
         return cb
 
 
-@bot.tree.command(name="leaderboard", description="FFA and team ELO leaderboards with pagination")
+@bot.tree.command(name="leaderboard", description="FFA ve teamer ELO sıralaması — butonlarla mod ve sayfa değiştirilebilir")
 async def leaderboard_command(interaction: discord.Interaction):
     view  = LeaderboardView("ffa")
     await interaction.response.send_message(embed=view.build_embed(), view=view)
@@ -1390,42 +1385,52 @@ class MostPlayedTypeView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=None)
 
 
-@bot.tree.command(name="mostplayed", description="Most played civilizations across all FFA or team matches")
+@bot.tree.command(name="mostplayed", description="En çok oynanan medeniyetleri FFA veya teamer modunda sıralı göster")
 async def mostplayed_command(interaction: discord.Interaction):
     await interaction.response.send_message("Hangi mod?", view=MostPlayedTypeView())
 
 
-@bot.tree.command(name="help", description="List all Civ6 bot commands.")
+@bot.tree.command(name="help", description="Tüm bot komutlarını ve açıklamalarını listele")
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(title="📖 Civ6 Bot Commands", color=discord.Color.blurple())
     embed.add_field(
         name="/ffa",
-        value="Map vote → civ ban (emoji) → leader pools distributed to voice channel players.",
+        value="Ses kanalındaki oyuncularla harita oyu → civ ban (emoji reaksiyon) → lider havuzu dağıtımı.",
         inline=False,
     )
     embed.add_field(
-        name="/team @opponent",
-        value="2-team draft: map bans → civ bans → civ picks (sequential, turn-based).",
+        name="/team @rakip",
+        value="Ses kanalıyla 2 takımlı sıralı draft: 6 harita ban → civ ban turu → sıralı civ seçim.",
         inline=False,
     )
     embed.add_field(
         name="/autodraftffa",
-        value="Pick player count + ban leaders → pools auto-distributed (no voice channel needed).",
+        value="Oyuncu sayısını seç, lider ban et → havuzlar otomatik dağıtılır (ses kanalı gerekmez).",
         inline=False,
     )
     embed.add_field(
         name="/autodraftteam",
-        value="Pick team count + ban leaders → pools auto-distributed to teams.",
+        value="Takım sayısını seç, lider ban et → her takıma otomatik dağıtılır (ses kanalı gerekmez).",
         inline=False,
     )
     embed.add_field(
         name="/id",
-        value="Submit FFA or team match results (scores saved) · View your stats.",
+        value="FFA veya teamer maç sonucu gir (ELO kaydedilir) · Kendi istatistiklerine bak.",
         inline=False,
     )
     embed.add_field(
-        name="⚙️ Emoji Config",
-        value="Fill in `civ_emojis.py` with each civilization's Discord emoji.",
+        name="/leaderboard",
+        value="FFA ve teamer ELO sıralaması. ⚔️ FFA / 🤝 Teamer butonuyla mod, ◀ ▶ ile sayfa değiştir.",
+        inline=False,
+    )
+    embed.add_field(
+        name="/mostplayed",
+        value="En çok oynanan medeniyetleri göster. FFA veya teamer modunu butonla seç.",
+        inline=False,
+    )
+    embed.add_field(
+        name="⚙️ Emoji Ayarı",
+        value="`civ_emojis.py` dosyasına her medeniyetin Discord emojisini ekle.",
         inline=False,
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
