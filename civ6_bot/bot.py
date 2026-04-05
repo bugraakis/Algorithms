@@ -1,26 +1,42 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
-import os
+import asyncio
 import random
+from collections import Counter
+import os
 from dotenv import load_dotenv
+
 from leaders import CIVS, LEADERS_BY_CIV, image_url
+from civ_emojis import CIV_EMOJIS
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-intents = discord.Intents.default()
-intents.members = True
-intents.voice_states = True
-
-bot = commands.Bot(command_prefix="!", intents=intents)
-
+# ---------------------------------------------------------------------------
+# All leaders flat list
+# ---------------------------------------------------------------------------
 ALL_LEADERS: list[tuple[str, str]] = [
     (civ, leader)
     for civ, leaders in LEADERS_BY_CIV.items()
     for leader in leaders
 ]
-# Civ pages for select menus (max 25 options each)
+
+# Civ pages for select menus (max 25 options)
 _CIV_PAGES: list[list[str]] = [CIVS[i : i + 25] for i in range(0, len(CIVS), 25)]
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+MAPS = [
+    ("Lakes",                      "🏞️"),
+    ("Pangea Ultima",              "🌍"),
+    ("Rich Highlands",             "⛰️"),
+    ("Tilted Axis (Wraparound)",   "🌐"),
+    ("Continents and Islands",     "🏝️"),
+    ("Seven Seas",                 "🌊"),
+    ("Primordial",                 "🌋"),
+]
 
 PLAYER_COLORS = [
     discord.Color.gold(),
@@ -36,6 +52,7 @@ PLAYER_COLORS = [
     discord.Color.from_rgb(220, 20, 60),
     discord.Color.from_rgb(50, 205, 50),
 ]
+
 TEAM_COLORS = [
     discord.Color.red(),
     discord.Color.blue(),
@@ -46,9 +63,21 @@ TEAM_COLORS = [
 ]
 TEAM_EMOJIS = ["🔴", "🔵", "🟡", "🟢", "🟣", "🟠"]
 
+# Active FFA games per channel
+active_ffa_games: dict[int, "FFAGame"] = {}
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Bot setup
+# ---------------------------------------------------------------------------
+intents = discord.Intents.default()
+intents.members = True
+intents.voice_states = True
+intents.reactions = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# ---------------------------------------------------------------------------
+# Shared helpers
 # ---------------------------------------------------------------------------
 
 def get_voice_members(interaction: discord.Interaction) -> list[discord.Member]:
@@ -58,28 +87,23 @@ def get_voice_members(interaction: discord.Interaction) -> list[discord.Member]:
     return [m for m in member.voice.channel.members if not m.bot]
 
 
-def distribute_leaders(
-    members: list[discord.Member], banned: set[tuple[str, str]]
-) -> dict[discord.Member, list[tuple[str, str]]]:
-    """Shuffle remaining leaders and deal them as evenly as possible."""
-    remaining = [pair for pair in ALL_LEADERS if pair not in banned]
-    random.shuffle(remaining)
-    n = len(members)
-    per_player = len(remaining) // n
-    pools: dict[discord.Member, list] = {m: [] for m in members}
-    for i, member in enumerate(members):
-        pools[member] = remaining[i * per_player : (i + 1) * per_player]
-    # Distribute leftover leaders one each to random players
-    leftover = remaining[n * per_player :]
-    for i, pair in enumerate(leftover):
-        pools[members[i]].append(pair)
-    return pools
+def emoji_to_civ(emoji_str: str) -> str | None:
+    """Return the civ name that matches this emoji string, or None."""
+    for civ, emoji in CIV_EMOJIS.items():
+        if emoji and str(emoji) == emoji_str:
+            return civ
+    return None
+
+
+def civ_emoji_str(civ: str) -> str:
+    """Return the configured emoji string for a civ, or empty string."""
+    return CIV_EMOJIS.get(civ) or ""
 
 
 def build_pool_embed(
     member: discord.Member,
     pool: list[tuple[str, str]],
-    color: discord.Color = discord.Color.dark_gold(),
+    color: discord.Color,
 ) -> discord.Embed:
     embed = discord.Embed(
         title=f"🎴 {member.display_name}",
@@ -94,39 +118,262 @@ def build_pool_embed(
 
 
 async def send_embeds(
-    interaction: discord.Interaction,
+    channel: discord.TextChannel,
     embeds: list[discord.Embed],
     content: str = "",
-    edit: bool = False,
 ):
-    """Send a list of embeds, chunking to ≤10 per message."""
+    """Send embeds in chunks of 10 (Discord limit)."""
     first, rest = embeds[:10], embeds[10:]
-    if edit:
-        await interaction.response.edit_message(
-            content=content or None, embeds=first, view=None
-        )
-    else:
-        await interaction.response.send_message(
-            content=content or None, embeds=first
-        )
-    while rest:
-        chunk, rest = rest[:10], rest[10:]
-        await interaction.followup.send(embeds=chunk)
+    await channel.send(content=content or None, embeds=first)
+    for i in range(0, len(rest), 10):
+        await channel.send(embeds=rest[i : i + 10])
+
+
+# ===========================================================================
+# FFA GAME — new flow: map vote → per-player civ ban → pool distribution
+# ===========================================================================
+
+class FFAGame:
+    def __init__(self, players: list[discord.Member]):
+        self.players = players
+        self.map_votes: dict[int, str] = {}   # player_id -> map_name
+        self.selected_map: str | None = None
+        self.bans: dict[int, str] = {}        # player_id -> civ_name
+
+    # ---- map phase ----
+
+    def record_map_vote(self, player_id: int, map_name: str):
+        self.map_votes[player_id] = map_name
+
+    def all_map_votes_done(self) -> bool:
+        return len(self.map_votes) == len(self.players)
+
+    def get_winning_map(self) -> str:
+        counts = Counter(self.map_votes.values())
+        max_votes = max(counts.values())
+        tied = [m for m, v in counts.items() if v == max_votes]
+        return random.choice(tied)
+
+    # ---- ban phase ----
+
+    def record_ban(self, player_id: int, civ: str):
+        self.bans[player_id] = civ
+
+    def all_bans_done(self) -> bool:
+        return len(self.bans) == len(self.players)
+
+    def get_banned_civs(self) -> set[str]:
+        return set(self.bans.values())
+
+    # ---- pool distribution ----
+
+    def distribute_pools(self) -> dict[discord.Member, list[tuple[str, str]]]:
+        banned_civs = self.get_banned_civs()
+        remaining = [(c, l) for c, l in ALL_LEADERS if c not in banned_civs]
+        random.shuffle(remaining)
+        n = len(self.players)
+        per_player = len(remaining) // n
+        pools: dict[discord.Member, list] = {}
+        for i, member in enumerate(self.players):
+            pools[member] = remaining[i * per_player : (i + 1) * per_player]
+        for i, pair in enumerate(remaining[n * per_player :]):
+            pools[self.players[i]].append(pair)
+        return pools
 
 
 # ---------------------------------------------------------------------------
-# Draft session — holds state through the ban phase
+# Map Selection View
 # ---------------------------------------------------------------------------
 
-class DraftSession:
-    def __init__(
-        self,
-        members: list[discord.Member],
-        mode: str,  # "ffa" | "teams"
-        team_count: int = 0,
-    ):
+class MapSelectionView(discord.ui.View):
+    def __init__(self, game: FFAGame):
+        super().__init__(timeout=None)
+        self.game = game
+        for map_name, emoji in MAPS:
+            btn = discord.ui.Button(
+                label=map_name,
+                emoji=emoji,
+                style=discord.ButtonStyle.primary,
+            )
+            btn.callback = self._make_vote_cb(map_name)
+            self.add_item(btn)
+
+    def build_embed(self) -> discord.Embed:
+        counts = Counter(self.game.map_votes.values())
+        n = len(self.game.players)
+        lines = []
+        for map_name, emoji in MAPS:
+            c = counts.get(map_name, 0)
+            bar = "█" * c + "░" * (n - c)
+            lines.append(f"{emoji} **{map_name}** — {c} oy  `{bar}`")
+
+        embed = discord.Embed(
+            title="🗺️ Harita Seçimi",
+            description="\n".join(lines),
+            color=discord.Color.blue(),
+        )
+        not_voted = [p for p in self.game.players if p.id not in self.game.map_votes]
+        if not_voted:
+            embed.add_field(
+                name="⏳ Oy Bekleniyorlar",
+                value=" ".join(m.mention for m in not_voted),
+                inline=False,
+            )
+        return embed
+
+    def _make_vote_cb(self, map_name: str):
+        async def callback(interaction: discord.Interaction):
+            if not any(p.id == interaction.user.id for p in self.game.players):
+                await interaction.response.send_message(
+                    "Bu oyuna dahil değilsin!", ephemeral=True
+                )
+                return
+
+            self.game.record_map_vote(interaction.user.id, map_name)
+            embed = self.build_embed()
+
+            if self.game.all_map_votes_done():
+                self.game.selected_map = self.game.get_winning_map()
+                for item in self.children:
+                    item.disabled = True
+                embed.color = discord.Color.green()
+                embed.title = f"✅ Harita Seçildi: **{self.game.selected_map}**"
+                await interaction.response.edit_message(embed=embed, view=self)
+                await _start_ban_phase(interaction.channel, self.game)
+            else:
+                await interaction.response.edit_message(embed=embed, view=self)
+
+        return callback
+
+
+# ---------------------------------------------------------------------------
+# Per-player Ban View
+# ---------------------------------------------------------------------------
+
+class PlayerBanView(discord.ui.View):
+    """One of these is posted per player in the channel during the ban phase."""
+
+    def __init__(self, player: discord.Member, game: FFAGame):
+        super().__init__(timeout=None)
+        self.player = player
+        self.game = game
+
+    def _build_waiting_embed(self) -> discord.Embed:
+        # Build a reference list of configured civ emojis
+        civ_lines = [
+            f"{civ_emoji_str(c)} {c}"
+            for c in CIVS
+            if CIV_EMOJIS.get(c)
+        ]
+        ref = "\n".join(civ_lines) if civ_lines else "*(civ_emojis.py henüz doldurulmadı)*"
+
+        embed = discord.Embed(
+            title=f"🎯 {self.player.display_name} — Ban Seçimi",
+            description=(
+                f"{self.player.mention} banlamak istediğin medeniyetin emojisini "
+                "**bu mesaja** ekle, sonra **✅ Onayla**'ya bas."
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(name="Medeniyet Emojileri", value=ref[:1024], inline=False)
+        return embed
+
+    @discord.ui.button(label="✅ Onayla", style=discord.ButtonStyle.green)
+    async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.player.id:
+            await interaction.response.send_message(
+                "Bu buton sana ait değil!", ephemeral=True
+            )
+            return
+
+        if self.player.id in self.game.bans:
+            await interaction.response.send_message("Zaten ban yaptın!", ephemeral=True)
+            return
+
+        # Read reactions on this message to find which civ the player picked
+        message = await interaction.channel.fetch_message(interaction.message.id)
+        banned_civ: str | None = None
+        for reaction in message.reactions:
+            async for user in reaction.users():
+                if user.id == self.player.id:
+                    banned_civ = emoji_to_civ(str(reaction.emoji))
+                    break
+            if banned_civ:
+                break
+
+        if not banned_civ:
+            await interaction.response.send_message(
+                "Önce banlamak istediğin medeniyetin emojisini bu mesaja ekle, "
+                "sonra Onayla'ya bas.",
+                ephemeral=True,
+            )
+            return
+
+        self.game.record_ban(self.player.id, banned_civ)
+        button.disabled = True
+
+        embed = discord.Embed(
+            title=f"🚫 {self.player.display_name} banladı",
+            description=f"{civ_emoji_str(banned_civ)} **{banned_civ}**",
+            color=discord.Color.red(),
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
+        if self.game.all_bans_done():
+            await _finalize_ffa_pools(interaction.channel, self.game)
+
+
+# ---------------------------------------------------------------------------
+# FFA phase helpers
+# ---------------------------------------------------------------------------
+
+async def _start_ban_phase(channel: discord.TextChannel, game: FFAGame):
+    header = discord.Embed(
+        title="🚫 Medeniyet Ban Aşaması",
+        description=(
+            "Her oyuncu **kendi mesajına** banlamak istediği medeniyetin emojisini eklesin, "
+            "ardından **✅ Onayla** butonuna bassın.\n"
+            "Herkes aynı anda ban yapabilir — sıra yok!"
+        ),
+        color=discord.Color.orange(),
+    )
+    await channel.send(embed=header)
+
+    for player in game.players:
+        view = PlayerBanView(player, game)
+        await channel.send(embed=view._build_waiting_embed(), view=view)
+
+
+async def _finalize_ffa_pools(channel: discord.TextChannel, game: FFAGame):
+    banned = game.get_banned_civs()
+    pools = game.distribute_pools()
+    mentions = " ".join(m.mention for m in game.players)
+
+    ban_summary = "  ·  ".join(
+        f"{civ_emoji_str(c)} **{c}**" for c in sorted(banned)
+    ) or "Yok"
+
+    header = discord.Embed(
+        title=f"🗺️ {game.selected_map}  ·  ⚔️ FFA Draft Tamamlandı!",
+        description=f"**Banlanan Medeniyetler:** {ban_summary}",
+        color=discord.Color.gold(),
+    )
+    await channel.send(content=mentions, embed=header)
+
+    for i, player in enumerate(game.players):
+        embed = build_pool_embed(player, pools[player], PLAYER_COLORS[i % len(PLAYER_COLORS)])
+        await channel.send(content=player.mention, embed=embed)
+
+    active_ffa_games.pop(channel.id, None)
+
+
+# ===========================================================================
+# TEAM DRAFT — unchanged from original
+# ===========================================================================
+
+class TeamDraftSession:
+    def __init__(self, members: list[discord.Member], team_count: int):
         self.members = members
-        self.mode = mode
         self.team_count = team_count
         self.banned: set[tuple[str, str]] = set()
 
@@ -145,68 +392,54 @@ class DraftSession:
         )
 
     async def finalize(self, interaction: discord.Interaction):
-        pools = distribute_leaders(self.members, self.banned)
+        remaining = [p for p in ALL_LEADERS if p not in self.banned]
+        random.shuffle(remaining)
+        shuffled_members = self.members[:]
+        random.shuffle(shuffled_members)
+
+        teams: list[list[discord.Member]] = [[] for _ in range(self.team_count)]
+        for i, m in enumerate(shuffled_members):
+            teams[i % self.team_count].append(m)
+
+        n = len(self.members)
+        per_player = len(remaining) // n
+        player_pools: dict[discord.Member, list] = {}
+        for i, m in enumerate(self.members):
+            player_pools[m] = remaining[i * per_player : (i + 1) * per_player]
+        for i, pair in enumerate(remaining[n * per_player :]):
+            player_pools[self.members[i]].append(pair)
+
         mentions = " ".join(m.mention for m in self.members)
-
-        if self.mode == "ffa":
-            header = discord.Embed(
-                title="⚔️ Civilization VI — FFA Draft",
-                description=(
-                    f"{len(self.members)} oyuncu · "
-                    f"{len(self.banned)} ban · "
-                    f"kişi başı ~{len(ALL_LEADERS) - len(self.banned)} / {len(self.members)} lider"
-                ),
-                color=discord.Color.gold(),
+        header = discord.Embed(
+            title="🤝 Civilization VI — Takımlı Draft",
+            description=f"{len(self.members)} oyuncu · {self.team_count} takım · {len(self.banned)} ban",
+            color=discord.Color.green(),
+        )
+        all_embeds: list[discord.Embed] = [header]
+        for i, team in enumerate(teams):
+            team_header = discord.Embed(
+                title=f"{TEAM_EMOJIS[i % len(TEAM_EMOJIS)]} Takım {i + 1}",
+                color=TEAM_COLORS[i % len(TEAM_COLORS)],
             )
-            player_embeds = [
-                build_pool_embed(m, pools[m], PLAYER_COLORS[i % len(PLAYER_COLORS)])
-                for i, m in enumerate(self.members)
-            ]
-            await send_embeds(interaction, [header] + player_embeds, mentions, edit=True)
-
-        else:
-            # Assign teams
-            shuffled = self.members[:]
-            random.shuffle(shuffled)
-            teams: list[list[discord.Member]] = [[] for _ in range(self.team_count)]
-            for i, m in enumerate(shuffled):
-                teams[i % self.team_count].append(m)
-
-            header = discord.Embed(
-                title="🤝 Civilization VI — Takımlı Draft",
-                description=(
-                    f"{len(self.members)} oyuncu · "
-                    f"{self.team_count} takım · "
-                    f"{len(self.banned)} ban"
-                ),
-                color=discord.Color.green(),
-            )
-            all_embeds: list[discord.Embed] = [header]
-            for i, team in enumerate(teams):
-                team_header = discord.Embed(
-                    title=f"{TEAM_EMOJIS[i % len(TEAM_EMOJIS)]} Takım {i + 1}",
-                    color=TEAM_COLORS[i % len(TEAM_COLORS)],
+            all_embeds.append(team_header)
+            for member in team:
+                all_embeds.append(
+                    build_pool_embed(member, player_pools[member], TEAM_COLORS[i % len(TEAM_COLORS)])
                 )
-                all_embeds.append(team_header)
-                for member in team:
-                    all_embeds.append(
-                        build_pool_embed(member, pools[member], TEAM_COLORS[i % len(TEAM_COLORS)])
-                    )
-            await send_embeds(interaction, all_embeds, mentions, edit=True)
 
+        first, rest = all_embeds[:10], all_embeds[10:]
+        await interaction.response.edit_message(content=mentions, embeds=first, view=None)
+        for chunk in [rest[i : i + 10] for i in range(0, len(rest), 10)]:
+            await interaction.followup.send(embeds=chunk)
 
-# ---------------------------------------------------------------------------
-# Leader ban selector (shown after a civ is chosen)
-# ---------------------------------------------------------------------------
 
 class LeaderBanView(discord.ui.View):
-    def __init__(self, session: DraftSession, civ: str, ban_view: "BanPhaseView"):
+    def __init__(self, session: TeamDraftSession, civ: str, ban_view: "TeamBanPhaseView"):
         super().__init__(timeout=120)
         self.session = session
         self.civ = civ
         self.ban_view = ban_view
 
-        leaders = LEADERS_BY_CIV[civ]
         options = [
             discord.SelectOption(
                 label=l,
@@ -214,10 +447,10 @@ class LeaderBanView(discord.ui.View):
                 description="BANLI" if (civ, l) in session.banned else "",
                 default=(civ, l) in session.banned,
             )
-            for l in leaders
+            for l in LEADERS_BY_CIV[civ]
         ]
         sel = discord.ui.Select(
-            placeholder=f"{civ} — ban etmek istediklerini seç (boş = ban yok)",
+            placeholder=f"{civ} — ban etmek istediklerini seç",
             options=options,
             min_values=0,
             max_values=len(options),
@@ -231,28 +464,19 @@ class LeaderBanView(discord.ui.View):
 
     async def _on_select(self, interaction: discord.Interaction):
         selected = set(interaction.data["values"])
-        # Remove all bans for this civ then re-add selected
         self.session.banned = {p for p in self.session.banned if p[0] != self.civ}
         for l in selected:
             self.session.banned.add((self.civ, l))
         self.ban_view._rebuild()
-        await interaction.response.edit_message(
-            content=self.session.ban_status(), view=self.ban_view
-        )
+        await interaction.response.edit_message(content=self.session.ban_status(), view=self.ban_view)
 
     async def _go_back(self, interaction: discord.Interaction):
         self.ban_view._rebuild()
-        await interaction.response.edit_message(
-            content=self.session.ban_status(), view=self.ban_view
-        )
+        await interaction.response.edit_message(content=self.session.ban_status(), view=self.ban_view)
 
 
-# ---------------------------------------------------------------------------
-# Ban phase view — paginated civ list + Start Draft button
-# ---------------------------------------------------------------------------
-
-class BanPhaseView(discord.ui.View):
-    def __init__(self, session: DraftSession):
+class TeamBanPhaseView(discord.ui.View):
+    def __init__(self, session: TeamDraftSession):
         super().__init__(timeout=600)
         self.session = session
         self.page = 0
@@ -260,14 +484,13 @@ class BanPhaseView(discord.ui.View):
 
     def _rebuild(self):
         self.clear_items()
-
         civs = _CIV_PAGES[self.page]
-        civ_sel = discord.ui.Select(
+        sel = discord.ui.Select(
             placeholder=f"Medeniyet seç — Sayfa {self.page + 1}/{len(_CIV_PAGES)}",
             options=[discord.SelectOption(label=c, value=c) for c in civs],
         )
-        civ_sel.callback = self._civ_chosen
-        self.add_item(civ_sel)
+        sel.callback = self._civ_chosen
+        self.add_item(sel)
 
         if self.page > 0:
             prev = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary)
@@ -290,23 +513,18 @@ class BanPhaseView(discord.ui.View):
     async def _prev(self, interaction: discord.Interaction):
         self.page -= 1
         self._rebuild()
-        await interaction.response.edit_message(
-            content=self.session.ban_status(), view=self
-        )
+        await interaction.response.edit_message(content=self.session.ban_status(), view=self)
 
     async def _next(self, interaction: discord.Interaction):
         self.page += 1
         self._rebuild()
-        await interaction.response.edit_message(
-            content=self.session.ban_status(), view=self
-        )
+        await interaction.response.edit_message(content=self.session.ban_status(), view=self)
 
     async def _civ_chosen(self, interaction: discord.Interaction):
         civ = interaction.data["values"][0]
-        view = LeaderBanView(self.session, civ, self)
         await interaction.response.edit_message(
             content=f"**{civ}** liderlerinden ban etmek istediklerini seç:",
-            view=view,
+            view=LeaderBanView(self.session, civ, self),
         )
 
     async def _start(self, interaction: discord.Interaction):
@@ -314,105 +532,56 @@ class BanPhaseView(discord.ui.View):
         await self.session.finalize(interaction)
 
 
-# ---------------------------------------------------------------------------
-# Team count selector → ban phase
-# ---------------------------------------------------------------------------
-
 class TeamCountView(discord.ui.View):
     def __init__(self, members: list[discord.Member]):
         super().__init__(timeout=60)
         self.members = members
         for n in [2, 3, 4, 5, 6]:
             if n <= len(members):
-                btn = discord.ui.Button(
-                    label=f"{n} Takım",
-                    style=discord.ButtonStyle.primary,
-                )
+                btn = discord.ui.Button(label=f"{n} Takım", style=discord.ButtonStyle.primary)
                 btn.callback = self._make_cb(n)
                 self.add_item(btn)
 
     def _make_cb(self, n: int):
         async def cb(interaction: discord.Interaction):
             self.stop()
-            session = DraftSession(self.members, "teams", team_count=n)
-            view = BanPhaseView(session)
-            await interaction.response.edit_message(
-                content=session.ban_status(), view=view
-            )
+            session = TeamDraftSession(self.members, team_count=n)
+            view = TeamBanPhaseView(session)
+            await interaction.response.edit_message(content=session.ban_status(), view=view)
         return cb
 
 
-# ---------------------------------------------------------------------------
-# Game mode selector
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Slash Commands
+# ===========================================================================
 
-class GameModeView(discord.ui.View):
-    def __init__(self, origin: discord.Interaction):
-        super().__init__(timeout=60)
-        self.origin = origin
-
-    @discord.ui.button(label="⚔️ FFA", style=discord.ButtonStyle.danger)
-    async def ffa_btn(self, interaction: discord.Interaction, _btn):
-        self.stop()
-        members = get_voice_members(self.origin)
-        if not members:
-            await interaction.response.edit_message(
-                content="❌ Bir ses kanalında olman gerekiyor!", embeds=[], view=None
-            )
-            return
-        session = DraftSession(members, "ffa")
-        view = BanPhaseView(session)
-        await interaction.response.edit_message(
-            content=session.ban_status(), embeds=[], view=view
-        )
-
-    @discord.ui.button(label="🤝 Takımlı", style=discord.ButtonStyle.success)
-    async def teams_btn(self, interaction: discord.Interaction, _btn):
-        self.stop()
-        members = get_voice_members(self.origin)
-        if not members:
-            await interaction.response.edit_message(
-                content="❌ Bir ses kanalında olman gerekiyor!", embeds=[], view=None
-            )
-            return
-        if len(members) < 2:
-            await interaction.response.edit_message(
-                content="❌ Takımlı oyun için en az 2 kişi gerekli!", embeds=[], view=None
-            )
-            return
-        view = TeamCountView(members)
-        await interaction.response.edit_message(
-            content=f"Kaç takım olsun? ({len(members)} oyuncu)",
-            embeds=[],
-            view=view,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Slash commands
-# ---------------------------------------------------------------------------
-
-@bot.tree.command(name="civ", description="Civ 6 oyun kurulumu: FFA veya Takımlı seçimi.")
-async def civ_command(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="🎮 Civilization VI",
-        description="Oyun modunu seçin:",
-        color=discord.Color.blurple(),
-    )
-    await interaction.response.send_message(embed=embed, view=GameModeView(interaction))
-
-
-@bot.tree.command(name="ffa", description="FFA ban + draft başlatır.")
+@bot.tree.command(name="ffa", description="FFA: Harita oylaması → Civ ban → Lider havuzu dağıtımı")
 async def ffa_command(interaction: discord.Interaction):
-    members = get_voice_members(interaction)
-    if not members:
+    if interaction.channel_id in active_ffa_games:
+        await interaction.response.send_message(
+            "Bu kanalda zaten aktif bir FFA oyunu var!", ephemeral=True
+        )
+        return
+
+    players = get_voice_members(interaction)
+    if not players:
         await interaction.response.send_message(
             "❌ Bir ses kanalında olman gerekiyor!", ephemeral=True
         )
         return
-    session = DraftSession(members, "ffa")
-    view = BanPhaseView(session)
-    await interaction.response.send_message(content=session.ban_status(), view=view)
+
+    game = FFAGame(players)
+    active_ffa_games[interaction.channel_id] = game
+
+    view = MapSelectionView(game)
+    embed = view.build_embed()
+    embed.description = "Oynamak istediğin haritaya oy ver!\n\n" + (embed.description or "")
+
+    await interaction.response.send_message(
+        content=" ".join(p.mention for p in players),
+        embed=embed,
+        view=view,
+    )
 
 
 @bot.tree.command(name="takim", description="Takımlı ban + draft başlatır.")
@@ -437,35 +606,44 @@ async def teams_command(interaction: discord.Interaction):
 @bot.tree.command(name="yardim", description="Civ6 bot komutlarını listeler.")
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(title="📖 Civ6 Bot Komutları", color=discord.Color.blurple())
-    embed.add_field(name="/civ",   value="Oyun modu seçimi (FFA veya Takımlı).", inline=False)
     embed.add_field(
         name="/ffa",
-        value="FFA drafti başlatır: ban aşaması → kalan liderler oyuncular arasında eşit dağıtılır.",
+        value=(
+            "Ses kanalındaki oyuncularla FFA başlatır.\n"
+            "1️⃣ Harita oylaması (butonlar, canlı güncelleme)\n"
+            "2️⃣ Herkes kendi mesajına civ emojisi koyar → Onayla\n"
+            "3️⃣ Kalan liderler eşit havuzlara bölünür"
+        ),
         inline=False,
     )
     embed.add_field(
         name="/takim",
-        value="Takımlı draft: takım sayısını seç → ban aşaması → liderler eşit dağıtılır.",
+        value="Takımlı draft: takım sayısını seç → lider ban → dağıtım.",
+        inline=False,
+    )
+    embed.add_field(
+        name="⚙️ Emoji Ayarı",
+        value="`civ_emojis.py` dosyasına her medeniyetin Discord emojisini ekle.",
         inline=False,
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Events
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 @bot.event
 async def on_ready():
     await bot.tree.sync()
     print(f"✅ {bot.user} olarak giriş yapıldı.")
     print("✅ Slash komutları senkronize edildi.")
-    await bot.change_presence(activity=discord.Game(name="Civilization VI | /civ"))
+    await bot.change_presence(activity=discord.Game(name="Civilization VI | /ffa"))
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Entry point
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 if __name__ == "__main__":
     if not TOKEN:
